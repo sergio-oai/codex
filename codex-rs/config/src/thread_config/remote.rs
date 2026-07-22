@@ -172,6 +172,7 @@ fn model_provider_from_proto(
     let info = ModelProviderInfo {
         name: provider.name,
         base_url: provider.base_url,
+        provider_manifest_path: provider.provider_manifest_path,
         env_key: provider.env_key,
         env_key_instructions: provider.env_key_instructions,
         experimental_bearer_token: provider.experimental_bearer_token,
@@ -202,6 +203,7 @@ fn model_provider_to_proto(
     let ModelProviderInfo {
         name,
         base_url,
+        provider_manifest_path,
         env_key,
         env_key_instructions,
         experimental_bearer_token,
@@ -223,6 +225,7 @@ fn model_provider_to_proto(
         id: id.into(),
         name,
         base_url,
+        provider_manifest_path,
         env_key,
         env_key_instructions,
         experimental_bearer_token,
@@ -438,6 +441,7 @@ mod tests {
                             id: "local".to_string(),
                             name: "Local".to_string(),
                             base_url: Some("http://127.0.0.1:8061/api/codex".to_string()),
+                            provider_manifest_path: Some("codex/provider-manifest".to_string()),
                             env_key: None,
                             env_key_instructions: None,
                             experimental_bearer_token: None,
@@ -507,6 +511,7 @@ mod tests {
         ModelProviderInfo {
             name: "Local".to_string(),
             base_url: Some("http://127.0.0.1:8061/api/codex".to_string()),
+            provider_manifest_path: Some("codex/provider-manifest".to_string()),
             env_key: None,
             env_key_instructions: None,
             experimental_bearer_token: None,

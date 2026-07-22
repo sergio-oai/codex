@@ -297,6 +297,7 @@ mod tests {
         ModelProviderInfo {
             name: name.to_string(),
             base_url: Some("http://127.0.0.1:8061/api/codex".to_string()),
+            provider_manifest_path: None,
             env_key: None,
             env_key_instructions: None,
             experimental_bearer_token: None,

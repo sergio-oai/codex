@@ -92,6 +92,13 @@ pub struct ModelProviderInfo {
     pub name: String,
     /// Base URL for the provider's OpenAI-compatible API.
     pub base_url: Option<String>,
+    /// Optional same-origin relative path to a versioned, provider-owned model manifest.
+    ///
+    /// When configured, Codex fetches this path relative to `base_url` and
+    /// uses safe model metadata from it as this provider's authoritative
+    /// catalog. Existing providers keep their current `/models` and bundled-
+    /// catalog behavior when the field is unset.
+    pub provider_manifest_path: Option<String>,
     /// Environment variable that stores the user's API key for this provider.
     pub env_key: Option<String>,
 
@@ -152,6 +159,10 @@ pub struct ModelProviderAwsAuthInfo {
 
 impl ModelProviderInfo {
     pub fn validate(&self) -> std::result::Result<(), String> {
+        if let Some(path) = self.provider_manifest_path.as_deref() {
+            validate_provider_manifest_path(path)?;
+        }
+
         if self.aws.is_some() {
             if self.supports_websockets {
                 // TODO(celia-oai): Support AWS SigV4 signing for WebSocket
@@ -330,6 +341,7 @@ impl ModelProviderInfo {
         ModelProviderInfo {
             name: OPENAI_PROVIDER_NAME.into(),
             base_url,
+            provider_manifest_path: None,
             env_key: None,
             env_key_instructions: None,
             experimental_bearer_token: None,
@@ -372,6 +384,7 @@ impl ModelProviderInfo {
             // this is unset. A configured value is therefore unambiguously an
             // endpoint override.
             base_url: None,
+            provider_manifest_path: None,
             env_key: None,
             env_key_instructions: None,
             experimental_bearer_token: None,
@@ -525,6 +538,7 @@ pub fn create_oss_provider_with_base_url(base_url: &str, wire_api: WireApi) -> M
     ModelProviderInfo {
         name: "gpt-oss".into(),
         base_url: Some(base_url.into()),
+        provider_manifest_path: None,
         env_key: None,
         env_key_instructions: None,
         experimental_bearer_token: None,
@@ -541,6 +555,26 @@ pub fn create_oss_provider_with_base_url(base_url: &str, wire_api: WireApi) -> M
         requires_openai_auth: false,
         supports_websockets: false,
     }
+}
+
+fn validate_provider_manifest_path(path: &str) -> std::result::Result<(), String> {
+    if path.is_empty() || path.trim() != path {
+        return Err("provider_manifest_path must be a non-empty relative path".to_string());
+    }
+    if path.starts_with('/')
+        || path.contains("://")
+        || path.contains('?')
+        || path.contains('#')
+        || path
+            .split('/')
+            .any(|segment| segment.is_empty() || segment == "." || segment == "..")
+    {
+        return Err(
+            "provider_manifest_path must be a same-origin relative path without query, fragment, or dot segments"
+                .to_string(),
+        );
+    }
+    Ok(())
 }
 
 #[cfg(test)]

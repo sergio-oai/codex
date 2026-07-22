@@ -76,6 +76,7 @@ fn assert_models_contain(actual: &[ModelInfo], expected: &[ModelInfo]) {
 
 #[derive(Debug)]
 struct TestModelsEndpoint {
+    catalog_policy: ModelCatalogPolicy,
     has_command_auth: bool,
     uses_codex_backend: bool,
     responses: Mutex<VecDeque<Vec<ModelInfo>>>,
@@ -86,6 +87,7 @@ struct TestModelsEndpoint {
 impl TestModelsEndpoint {
     fn new(responses: Vec<Vec<ModelInfo>>) -> Arc<Self> {
         Arc::new(Self {
+            catalog_policy: ModelCatalogPolicy::BundledOverlay,
             has_command_auth: false,
             uses_codex_backend: true,
             responses: Mutex::new(responses.into()),
@@ -96,6 +98,18 @@ impl TestModelsEndpoint {
 
     fn without_refresh(responses: Vec<Vec<ModelInfo>>) -> Arc<Self> {
         Arc::new(Self {
+            catalog_policy: ModelCatalogPolicy::BundledOverlay,
+            has_command_auth: false,
+            uses_codex_backend: false,
+            responses: Mutex::new(responses.into()),
+            fetch_count: AtomicUsize::new(0),
+            observed_proxy_policy: Mutex::new(None),
+        })
+    }
+
+    fn authoritative(responses: Vec<Vec<ModelInfo>>) -> Arc<Self> {
+        Arc::new(Self {
+            catalog_policy: ModelCatalogPolicy::AuthoritativeRemote,
             has_command_auth: false,
             uses_codex_backend: false,
             responses: Mutex::new(responses.into()),
@@ -160,6 +174,10 @@ impl ExternalAuth for TestUnresolvedExternalApiKeyAuth {
 }
 
 impl ModelsEndpointClient for TestModelsEndpoint {
+    fn catalog_policy(&self) -> ModelCatalogPolicy {
+        self.catalog_policy
+    }
+
     fn has_command_auth(&self) -> bool {
         self.has_command_auth
     }
@@ -670,6 +688,7 @@ async fn refresh_available_models_keeps_merging_for_api_auth() {
     )];
     let codex_home = tempdir().expect("temp dir");
     let endpoint = Arc::new(TestModelsEndpoint {
+        catalog_policy: ModelCatalogPolicy::BundledOverlay,
         has_command_auth: true,
         uses_codex_backend: false,
         responses: Mutex::new(vec![remote_models.clone()].into()),
@@ -696,6 +715,40 @@ async fn refresh_available_models_keeps_merging_for_api_auth() {
 
     assert_eq!(manager.get_remote_models().await, expected);
     assert_eq!(endpoint.fetch_count(), 1, "expected a single model fetch");
+}
+
+#[tokio::test]
+async fn authoritative_provider_manifest_refreshes_without_codex_auth() {
+    let remote_models = vec![remote_model(
+        "venado-only",
+        "Venado Only",
+        /*priority*/ 0,
+    )];
+    let endpoint = TestModelsEndpoint::authoritative(vec![remote_models.clone()]);
+    let manager =
+        OpenAiModelsManager::new_without_cache(endpoint.clone(), /*auth_manager*/ None);
+
+    manager
+        .refresh_available_models(
+            RefreshStrategy::OnlineIfUncached,
+            &DEFAULT_HTTP_CLIENT_FACTORY,
+        )
+        .await
+        .expect("manifest refresh succeeds");
+    manager
+        .refresh_available_models(
+            RefreshStrategy::OnlineIfUncached,
+            &DEFAULT_HTTP_CLIENT_FACTORY,
+        )
+        .await
+        .expect("in-memory manifest catalog is reused");
+
+    assert_eq!(manager.get_remote_models().await, remote_models);
+    assert_eq!(
+        endpoint.fetch_count(),
+        1,
+        "expected a single manifest fetch"
+    );
 }
 
 #[tokio::test]

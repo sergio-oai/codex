@@ -16,6 +16,8 @@ use std::future::Future;
 use std::path::PathBuf;
 use std::pin::Pin;
 use std::sync::Arc;
+use std::sync::atomic::AtomicBool;
+use std::sync::atomic::Ordering;
 use std::time::Duration;
 use tokio::sync::RwLock;
 use tokio::sync::TryLockError;
@@ -26,12 +28,26 @@ use tracing::info;
 const MODEL_CACHE_FILE: &str = "models_cache.json";
 const DEFAULT_MODEL_CACHE_TTL: Duration = Duration::from_secs(300);
 
+/// How remote model metadata combines with the bundled Codex catalog.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ModelCatalogPolicy {
+    /// Preserve the bundled catalog and overlay matching remote models.
+    BundledOverlay,
+    /// Treat the remote catalog as the complete list for this provider.
+    AuthoritativeRemote,
+}
+
 /// Remote endpoint used by the OpenAI-compatible model manager.
 ///
 /// Implementations own provider-specific auth and transport details. The model
 /// manager owns refresh policy, cache behavior, and catalog merging; it calls
 /// this endpoint only when it decides a remote refresh should happen.
 pub trait ModelsEndpointClient: fmt::Debug + Send + Sync {
+    /// Controls whether fetched models overlay or replace the bundled catalog.
+    fn catalog_policy(&self) -> ModelCatalogPolicy {
+        ModelCatalogPolicy::BundledOverlay
+    }
+
     /// Returns whether this provider can authenticate command-scoped requests.
     fn has_command_auth(&self) -> bool;
 
@@ -216,6 +232,7 @@ pub struct OpenAiModelsManager {
     remote_models: RwLock<Vec<ModelInfo>>,
     etag: RwLock<Option<String>>,
     cache_manager: Option<ModelsCacheManager>,
+    authoritative_catalog_initialized: AtomicBool,
     endpoint_client: SharedModelsEndpointClient,
     auth_manager: Option<Arc<AuthManager>>,
 }
@@ -255,11 +272,17 @@ impl OpenAiModelsManager {
         endpoint_client: Arc<dyn ModelsEndpointClient>,
         auth_manager: Option<Arc<AuthManager>>,
     ) -> Self {
-        let remote_models = load_remote_models_from_file().unwrap_or_default();
+        let remote_models = match endpoint_client.catalog_policy() {
+            ModelCatalogPolicy::BundledOverlay => {
+                load_remote_models_from_file().unwrap_or_default()
+            }
+            ModelCatalogPolicy::AuthoritativeRemote => Vec::new(),
+        };
         Self {
             remote_models: RwLock::new(remote_models),
             etag: RwLock::new(None),
             cache_manager,
+            authoritative_catalog_initialized: AtomicBool::new(false),
             endpoint_client,
             auth_manager,
         }
@@ -376,6 +399,14 @@ impl OpenAiModelsManager {
                 Ok(())
             }
             RefreshStrategy::OnlineIfUncached => {
+                if self.endpoint_client.catalog_policy() == ModelCatalogPolicy::AuthoritativeRemote
+                    && self
+                        .authoritative_catalog_initialized
+                        .load(Ordering::Acquire)
+                {
+                    info!("models cache: using in-memory models for OnlineIfUncached");
+                    return Ok(());
+                }
                 // Try cache first, fall back to online if unavailable
                 if self.try_load_cache().await {
                     info!("models cache: using cached models for OnlineIfUncached");
@@ -401,6 +432,10 @@ impl OpenAiModelsManager {
             .list_models(&client_version, http_client_factory.clone())
             .await?;
         self.apply_remote_models(models.clone()).await;
+        if self.endpoint_client.catalog_policy() == ModelCatalogPolicy::AuthoritativeRemote {
+            self.authoritative_catalog_initialized
+                .store(true, Ordering::Release);
+        }
         *self.etag.write().await = etag.clone();
         if let Some(cache_manager) = self.cache_manager.as_ref() {
             cache_manager
@@ -411,7 +446,9 @@ impl OpenAiModelsManager {
     }
 
     async fn should_refresh_models(&self) -> bool {
-        self.endpoint_client.uses_codex_backend().await || self.endpoint_client.has_command_auth()
+        self.endpoint_client.catalog_policy() == ModelCatalogPolicy::AuthoritativeRemote
+            || self.endpoint_client.uses_codex_backend().await
+            || self.endpoint_client.has_command_auth()
     }
 
     async fn get_etag(&self) -> Option<String> {
@@ -420,6 +457,11 @@ impl OpenAiModelsManager {
 
     /// Replace the cached remote models and rebuild the derived presets list.
     async fn apply_remote_models(&self, models: Vec<ModelInfo>) {
+        if self.endpoint_client.catalog_policy() == ModelCatalogPolicy::AuthoritativeRemote {
+            *self.remote_models.write().await = models;
+            return;
+        }
+
         // Use the remote models list as the source of truth if it contains at least one
         // non-hidden model and the user is using ChatGPT auth.
         let should_use_remote_models_only = !models.is_empty()

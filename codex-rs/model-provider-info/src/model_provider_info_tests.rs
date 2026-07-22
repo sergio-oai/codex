@@ -14,6 +14,7 @@ base_url = "http://localhost:11434/v1"
     let expected_provider = ModelProviderInfo {
         name: "Ollama".into(),
         base_url: Some("http://localhost:11434/v1".into()),
+        provider_manifest_path: None,
         env_key: None,
         env_key_instructions: None,
         experimental_bearer_token: None,
@@ -46,6 +47,7 @@ query_params = { api-version = "2025-04-01-preview" }
     let expected_provider = ModelProviderInfo {
         name: "Azure".into(),
         base_url: Some("https://xxxxx.openai.azure.com/openai".into()),
+        provider_manifest_path: None,
         env_key: Some("AZURE_OPENAI_API_KEY".into()),
         env_key_instructions: None,
         experimental_bearer_token: None,
@@ -81,6 +83,7 @@ env_http_headers = { "X-Example-Env-Header" = "EXAMPLE_ENV_VAR" }
     let expected_provider = ModelProviderInfo {
         name: "Example".into(),
         base_url: Some("https://example.com".into()),
+        provider_manifest_path: None,
         env_key: Some("API_KEY".into()),
         env_key_instructions: None,
         experimental_bearer_token: None,
@@ -133,6 +136,44 @@ supports_websockets = true
 }
 
 #[test]
+fn test_deserialize_provider_manifest_path() {
+    let provider_toml = r#"
+name = "Venado"
+base_url = "https://venado.example/api/gov-v1"
+provider_manifest_path = "codex/provider-manifest"
+        "#;
+
+    let provider: ModelProviderInfo = toml::from_str(provider_toml).unwrap();
+
+    assert_eq!(
+        provider.provider_manifest_path.as_deref(),
+        Some("codex/provider-manifest")
+    );
+}
+
+#[test]
+fn test_validate_provider_manifest_path_rejects_non_relative_paths() {
+    for path in [
+        "",
+        "/codex/provider-manifest",
+        "https://example.com/manifest",
+        "codex/../manifest",
+        "codex/manifest?token=secret",
+        "codex/manifest#fragment",
+    ] {
+        let provider = ModelProviderInfo {
+            provider_manifest_path: Some(path.to_string()),
+            ..ModelProviderInfo::default()
+        };
+
+        assert!(
+            provider.validate().is_err(),
+            "expected provider manifest path {path:?} to fail validation"
+        );
+    }
+}
+
+#[test]
 fn test_supports_remote_compaction_for_openai() {
     let provider = ModelProviderInfo::create_openai_provider(/*base_url*/ None);
 
@@ -162,6 +203,7 @@ fn test_supports_remote_compaction_for_azure_name() {
     let provider = ModelProviderInfo {
         name: "Azure".into(),
         base_url: Some("https://example.com/openai".into()),
+        provider_manifest_path: None,
         env_key: Some("AZURE_OPENAI_API_KEY".into()),
         env_key_instructions: None,
         experimental_bearer_token: None,
@@ -187,6 +229,7 @@ fn test_supports_remote_compaction_for_non_openai_non_azure_provider() {
     let provider = ModelProviderInfo {
         name: "Example".into(),
         base_url: Some("https://example.com/v1".into()),
+        provider_manifest_path: None,
         env_key: Some("API_KEY".into()),
         env_key_instructions: None,
         experimental_bearer_token: None,
@@ -289,6 +332,7 @@ fn test_create_amazon_bedrock_provider() {
         ModelProviderInfo {
             name: "Amazon Bedrock".to_string(),
             base_url: None,
+            provider_manifest_path: None,
             env_key: None,
             env_key_instructions: None,
             experimental_bearer_token: None,

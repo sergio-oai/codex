@@ -21,6 +21,7 @@ use codex_login::CodexAuth;
 use codex_login::collect_auth_env_telemetry;
 use codex_login::default_client::create_client_for_route_async;
 use codex_model_provider_info::ModelProviderInfo;
+use codex_models_manager::manager::ModelCatalogPolicy;
 use codex_models_manager::manager::ModelsEndpointClient;
 use codex_models_manager::manager::ModelsEndpointFuture;
 use codex_otel::TelemetryAuthMode;
@@ -34,11 +35,13 @@ use tokio::time::timeout;
 
 use crate::auth::agent_identity_telemetry;
 use crate::auth::resolve_provider_auth;
+use crate::provider_manifest::parse_provider_manifest;
 
 const MODELS_REFRESH_TIMEOUT: Duration = Duration::from_secs(5);
 const MODELS_ENDPOINT: &str = "/models";
+const PROVIDER_MANIFEST_ENDPOINT: &str = "/provider-manifest";
 
-/// Provider-owned OpenAI-compatible `/models` endpoint.
+/// Provider-owned model metadata endpoint.
 #[derive(Debug)]
 pub(crate) struct OpenAiModelsEndpoint {
     provider_info: ModelProviderInfo,
@@ -83,8 +86,18 @@ impl OpenAiModelsEndpoint {
         let auth_mode = auth.as_ref().map(CodexAuth::auth_mode);
         let api_provider = self.provider_info.to_api_provider(auth_mode)?;
         let api_auth = resolve_provider_auth(auth.as_ref(), &self.provider_info)?;
-        let request_url =
-            ModelsClient::<ReqwestTransport>::request_url(&api_provider, client_version);
+        let uses_provider_manifest = self.provider_info.provider_manifest_path.is_some();
+        let request_path = self
+            .provider_info
+            .provider_manifest_path
+            .as_deref()
+            .unwrap_or(MODELS_ENDPOINT.trim_start_matches('/'))
+            .to_string();
+        let request_url = ModelsClient::<ReqwestTransport>::request_url_for_path(
+            &api_provider,
+            &request_path,
+            client_version,
+        );
         let auth_telemetry = auth_header_telemetry(api_auth.as_ref());
         let agent_identity_telemetry = if let Some(CodexAuth::AgentIdentity(auth)) = auth.as_ref() {
             Some(agent_identity_telemetry(auth))
@@ -97,6 +110,11 @@ impl OpenAiModelsEndpoint {
             auth_header_name: auth_telemetry.name,
             agent_identity_telemetry,
             auth_env: self.auth_env(),
+            endpoint: if uses_provider_manifest {
+                PROVIDER_MANIFEST_ENDPOINT
+            } else {
+                MODELS_ENDPOINT
+            },
         });
         timeout(MODELS_REFRESH_TIMEOUT, async {
             let transport = self
@@ -105,10 +123,19 @@ impl OpenAiModelsEndpoint {
                 .await?;
             let client = ModelsClient::new(transport, api_provider, api_auth)
                 .with_telemetry(Some(request_telemetry));
-            client
-                .list_models(request_url, HeaderMap::new())
-                .await
-                .map_err(map_api_error)
+            if uses_provider_manifest {
+                let (body, etag) = client
+                    .fetch_model_metadata(&request_path, request_url, HeaderMap::new())
+                    .await
+                    .map_err(map_api_error)?;
+                let models = parse_provider_manifest(&body).map_err(CodexErr::InvalidRequest)?;
+                Ok((models, etag))
+            } else {
+                client
+                    .list_models(request_url, HeaderMap::new())
+                    .await
+                    .map_err(map_api_error)
+            }
         })
         .await
         .map_err(|_| CodexErr::Timeout)?
@@ -124,6 +151,14 @@ impl OpenAiModelsEndpoint {
 }
 
 impl ModelsEndpointClient for OpenAiModelsEndpoint {
+    fn catalog_policy(&self) -> ModelCatalogPolicy {
+        if self.provider_info.provider_manifest_path.is_some() {
+            ModelCatalogPolicy::AuthoritativeRemote
+        } else {
+            ModelCatalogPolicy::BundledOverlay
+        }
+    }
+
     fn has_command_auth(&self) -> bool {
         self.provider_info.has_command_auth()
     }
@@ -183,6 +218,7 @@ struct ModelsRequestTelemetry {
     auth_header_name: Option<&'static str>,
     agent_identity_telemetry: Option<AgentIdentityTelemetry>,
     auth_env: AuthEnvTelemetry,
+    endpoint: &'static str,
 }
 
 impl RequestTelemetry for ModelsRequestTelemetry {
@@ -208,7 +244,7 @@ impl RequestTelemetry for ModelsRequestTelemetry {
             success = success,
             error.message = error_message.as_deref(),
             attempt = attempt,
-            endpoint = MODELS_ENDPOINT,
+            endpoint = self.endpoint,
             auth.header_attached = self.auth_header_attached,
             auth.header_name = self.auth_header_name,
             auth.env_openai_api_key_present = self.auth_env.openai_api_key_env_present,
@@ -234,7 +270,7 @@ impl RequestTelemetry for ModelsRequestTelemetry {
             success = success,
             error.message = error_message.as_deref(),
             attempt = attempt,
-            endpoint = MODELS_ENDPOINT,
+            endpoint = self.endpoint,
             auth.header_attached = self.auth_header_attached,
             auth.header_name = self.auth_header_name,
             auth.env_openai_api_key_present = self.auth_env.openai_api_key_env_present,
@@ -253,7 +289,7 @@ impl RequestTelemetry for ModelsRequestTelemetry {
         );
         emit_feedback_request_tags_with_auth_env(
             &FeedbackRequestTags {
-                endpoint: MODELS_ENDPOINT,
+                endpoint: self.endpoint,
                 auth_header_attached: self.auth_header_attached,
                 auth_header_name: self.auth_header_name,
                 auth_mode: self.auth_mode.as_deref(),
@@ -287,6 +323,7 @@ mod tests {
     use wiremock::Mock;
     use wiremock::MockServer;
     use wiremock::ResponseTemplate;
+    use wiremock::matchers::header;
     use wiremock::matchers::method;
     use wiremock::matchers::path;
     use wiremock::matchers::query_param;
@@ -348,6 +385,61 @@ mod tests {
         );
 
         assert!(!endpoint.has_command_auth());
+        assert_eq!(
+            endpoint.catalog_policy(),
+            ModelCatalogPolicy::BundledOverlay
+        );
+    }
+
+    #[tokio::test]
+    async fn provider_manifest_uses_opt_in_path_and_existing_auth_headers() {
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/codex/provider-manifest"))
+            .and(query_param("client_version", "0.0.0"))
+            .and(header("authorization", "Bearer venado-token"))
+            .and(header("x-venado-client", "codex"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "schema_version": 1,
+                "models": [{
+                    "id": "d8",
+                    "display_name": "d8",
+                    "description": "Venado d8",
+                    "context_window": null,
+                    "max_input_tokens": 16384,
+                    "default_reasoning_effort": null,
+                    "supported_reasoning_efforts": [],
+                    "service_tiers": []
+                }]
+            })))
+            .expect(1)
+            .mount(&server)
+            .await;
+
+        let mut provider_info = ModelProviderInfo::create_openai_provider(Some(server.uri()));
+        provider_info.requires_openai_auth = false;
+        provider_info.provider_manifest_path = Some("codex/provider-manifest".to_string());
+        provider_info.experimental_bearer_token = Some("venado-token".to_string());
+        provider_info.http_headers = Some(std::collections::HashMap::from([(
+            "x-venado-client".to_string(),
+            "codex".to_string(),
+        )]));
+        let endpoint = OpenAiModelsEndpoint::new(provider_info, /*auth_manager*/ None);
+
+        let (models, _) = endpoint
+            .list_models(
+                "0.0.0",
+                HttpClientFactory::new(OutboundProxyPolicy::RespectSystemProxy),
+            )
+            .await
+            .expect("provider manifest request should succeed");
+
+        assert_eq!(models.len(), 1);
+        assert_eq!(models[0].slug, "d8");
+        assert_eq!(
+            endpoint.catalog_policy(),
+            ModelCatalogPolicy::AuthoritativeRemote
+        );
     }
 
     #[tokio::test]

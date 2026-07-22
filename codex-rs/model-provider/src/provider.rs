@@ -340,11 +340,22 @@ impl ModelProvider for ConfiguredModelProvider {
                     self.info.clone(),
                     self.auth_manager.clone(),
                 ));
-                Arc::new(OpenAiModelsManager::new(
-                    codex_home,
-                    endpoint,
-                    self.auth_manager.clone(),
-                ))
+                if self.info.provider_manifest_path.is_some() {
+                    // Provider manifests are intentionally not persisted in the
+                    // shared models cache. That cache is not provider-scoped,
+                    // so reusing it could leak one provider's authoritative
+                    // catalog into another provider after a config switch.
+                    Arc::new(OpenAiModelsManager::new_without_cache(
+                        endpoint,
+                        self.auth_manager.clone(),
+                    ))
+                } else {
+                    Arc::new(OpenAiModelsManager::new(
+                        codex_home,
+                        endpoint,
+                        self.auth_manager.clone(),
+                    ))
+                }
             }
         }
     }
@@ -426,6 +437,7 @@ mod tests {
         ModelProviderInfo {
             name: "mock".into(),
             base_url: Some(base_url),
+            provider_manifest_path: None,
             env_key: None,
             env_key_instructions: None,
             experimental_bearer_token: None,
