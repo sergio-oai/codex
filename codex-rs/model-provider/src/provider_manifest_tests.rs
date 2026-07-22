@@ -86,6 +86,59 @@ fn uses_max_input_tokens_when_context_window_is_unknown() {
 }
 
 #[test]
+fn does_not_inherit_bundled_openai_request_shape_capabilities() {
+    let body = serde_json::to_vec(&json!({
+        "schema_version": 1,
+        "models": [{
+            "id": "gpt-5.6-sol",
+            "display_name": "GPT-5.6-Sol on a custom provider",
+            "context_window": 272000,
+            "supported_reasoning_efforts": ["low", "medium", "high"],
+            "service_tiers": []
+        }]
+    }))
+    .expect("manifest serializes");
+
+    let models = parse_provider_manifest(&body).expect("manifest parses");
+    let model = models.first().expect("one manifest model");
+
+    assert!(!model.use_responses_lite);
+    assert!(!model.supports_parallel_tool_calls);
+    assert_eq!(model.tool_mode, None);
+    assert_eq!(model.multi_agent_version, None);
+}
+
+#[test]
+fn rejects_empty_catalogs_and_limits_that_can_overflow_compaction_math() {
+    let empty = serde_json::to_vec(&json!({
+        "schema_version": 1,
+        "models": []
+    }))
+    .expect("manifest serializes");
+    let overflowing_limit = serde_json::to_vec(&json!({
+        "schema_version": 1,
+        "models": [{
+            "id": "d8",
+            "display_name": "d8",
+            "context_window": i64::MAX,
+            "service_tiers": []
+        }]
+    }))
+    .expect("manifest serializes");
+
+    assert!(
+        parse_provider_manifest(&empty)
+            .expect_err("empty manifest should fail")
+            .contains("at least one model")
+    );
+    assert!(
+        parse_provider_manifest(&overflowing_limit)
+            .expect_err("overflowing context window should fail")
+            .contains("must be no greater than")
+    );
+}
+
+#[test]
 fn rejects_unsupported_schema_versions_and_duplicate_models() {
     let unsupported = serde_json::to_vec(&json!({
         "schema_version": 2,

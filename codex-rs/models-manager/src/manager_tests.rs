@@ -84,6 +84,50 @@ struct TestModelsEndpoint {
     observed_proxy_policy: Mutex<Option<OutboundProxyPolicy>>,
 }
 
+#[derive(Debug)]
+struct FailingAuthoritativeModelsEndpoint {
+    fetch_count: AtomicUsize,
+}
+
+impl FailingAuthoritativeModelsEndpoint {
+    fn new() -> Arc<Self> {
+        Arc::new(Self {
+            fetch_count: AtomicUsize::new(0),
+        })
+    }
+
+    fn fetch_count(&self) -> usize {
+        self.fetch_count.load(Ordering::SeqCst)
+    }
+}
+
+impl ModelsEndpointClient for FailingAuthoritativeModelsEndpoint {
+    fn catalog_policy(&self) -> ModelCatalogPolicy {
+        ModelCatalogPolicy::AuthoritativeRemote
+    }
+
+    fn has_command_auth(&self) -> bool {
+        false
+    }
+
+    fn uses_codex_backend(&self) -> ModelsEndpointFuture<'_, bool> {
+        Box::pin(async { false })
+    }
+
+    fn list_models<'a>(
+        &'a self,
+        _client_version: &'a str,
+        _http_client_factory: HttpClientFactory,
+    ) -> ModelsEndpointFuture<'a, CoreResult<(Vec<ModelInfo>, Option<String>)>> {
+        Box::pin(async move {
+            self.fetch_count.fetch_add(1, Ordering::SeqCst);
+            Err(codex_protocol::error::CodexErr::Fatal(
+                "manifest endpoint unavailable".to_string(),
+            ))
+        })
+    }
+}
+
 impl TestModelsEndpoint {
     fn new(responses: Vec<Vec<ModelInfo>>) -> Arc<Self> {
         Arc::new(Self {
@@ -364,7 +408,7 @@ async fn static_manager_preserves_unsupported_requested_model_when_fallback_is_d
 }
 
 #[tokio::test]
-async fn static_manager_uses_empty_default_when_fallback_is_allowed_and_catalog_is_empty() {
+async fn static_manager_preserves_requested_model_when_catalog_is_empty() {
     let manager = static_manager_for_tests(ModelsResponse { models: Vec::new() });
     let requested_model = Some("unsupported".to_string());
 
@@ -377,7 +421,7 @@ async fn static_manager_uses_empty_default_when_fallback_is_allowed_and_catalog_
         )
         .await;
 
-    assert_eq!(model, "");
+    assert_eq!(model, "unsupported");
 }
 
 #[tokio::test]
@@ -398,6 +442,73 @@ async fn dynamic_manager_preserves_requested_model_when_fallback_is_allowed() {
 
     assert_eq!(model, "unsupported");
     assert_eq!(endpoint.fetch_count(), 0);
+}
+
+#[tokio::test]
+async fn authoritative_manager_honors_requested_model_fallback_policy() {
+    let endpoint = TestModelsEndpoint::authoritative(vec![vec![
+        remote_model("provider-default", "Default", /*priority*/ 0),
+        remote_model("provider-supported", "Supported", /*priority*/ 1),
+    ]]);
+    let manager =
+        OpenAiModelsManager::new_without_cache(endpoint.clone(), /*auth_manager*/ None);
+
+    let supported_model = Some("provider-supported".to_string());
+    let supported = manager
+        .get_default_model(
+            &supported_model,
+            /*allow_provider_model_fallback*/ true,
+            RefreshStrategy::OnlineIfUncached,
+            DEFAULT_HTTP_CLIENT_FACTORY,
+        )
+        .await;
+    assert_eq!(supported, "provider-supported");
+
+    let unsupported_model = Some("unsupported".to_string());
+    let fallback = manager
+        .get_default_model(
+            &unsupported_model,
+            /*allow_provider_model_fallback*/ true,
+            RefreshStrategy::OnlineIfUncached,
+            DEFAULT_HTTP_CLIENT_FACTORY,
+        )
+        .await;
+    assert_eq!(fallback, "provider-default");
+
+    let preserved = manager
+        .get_default_model(
+            &unsupported_model,
+            /*allow_provider_model_fallback*/ false,
+            RefreshStrategy::OnlineIfUncached,
+            DEFAULT_HTTP_CLIENT_FACTORY,
+        )
+        .await;
+    assert_eq!(preserved, "unsupported");
+    assert_eq!(
+        endpoint.fetch_count(),
+        1,
+        "a fresh authoritative catalog should be reused for fallback checks"
+    );
+}
+
+#[tokio::test]
+async fn authoritative_manager_preserves_requested_model_when_initial_manifest_fetch_fails() {
+    let endpoint = FailingAuthoritativeModelsEndpoint::new();
+    let manager =
+        OpenAiModelsManager::new_without_cache(endpoint.clone(), /*auth_manager*/ None);
+    let requested_model = Some("configured-model".to_string());
+
+    let model = manager
+        .get_default_model(
+            &requested_model,
+            /*allow_provider_model_fallback*/ true,
+            RefreshStrategy::OnlineIfUncached,
+            DEFAULT_HTTP_CLIENT_FACTORY,
+        )
+        .await;
+
+    assert_eq!(model, "configured-model");
+    assert_eq!(endpoint.fetch_count(), 1);
 }
 
 #[tokio::test]
@@ -748,6 +859,50 @@ async fn authoritative_provider_manifest_refreshes_without_codex_auth() {
         endpoint.fetch_count(),
         1,
         "expected a single manifest fetch"
+    );
+}
+
+#[tokio::test]
+async fn authoritative_provider_manifest_refetches_after_in_memory_ttl_expires() {
+    let initial_models = vec![remote_model(
+        "venado-old",
+        "Venado Old",
+        /*priority*/ 0,
+    )];
+    let updated_models = vec![remote_model(
+        "venado-new",
+        "Venado New",
+        /*priority*/ 0,
+    )];
+    let endpoint =
+        TestModelsEndpoint::authoritative(vec![initial_models.clone(), updated_models.clone()]);
+    let mut manager =
+        OpenAiModelsManager::new_without_cache(endpoint.clone(), /*auth_manager*/ None);
+
+    manager
+        .refresh_available_models(
+            RefreshStrategy::OnlineIfUncached,
+            &DEFAULT_HTTP_CLIENT_FACTORY,
+        )
+        .await
+        .expect("initial manifest refresh succeeds");
+    assert_eq!(manager.get_remote_models().await, initial_models);
+
+    manager.authoritative_catalog_ttl = std::time::Duration::ZERO;
+
+    manager
+        .refresh_available_models(
+            RefreshStrategy::OnlineIfUncached,
+            &DEFAULT_HTTP_CLIENT_FACTORY,
+        )
+        .await
+        .expect("expired manifest refresh succeeds");
+
+    assert_eq!(manager.get_remote_models().await, updated_models);
+    assert_eq!(
+        endpoint.fetch_count(),
+        2,
+        "an expired in-memory manifest should be fetched again"
     );
 }
 

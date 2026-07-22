@@ -608,6 +608,15 @@ impl Session {
                 config.http_client_factory(),
             )
             .await;
+        if model.is_empty() {
+            let message = match config.model_provider.provider_manifest_path.as_deref() {
+                Some(path) => format!(
+                    "provider manifest {path} did not yield an available model; verify the manifest endpoint and try again"
+                ),
+                None => "no available model could be selected for this provider".to_string(),
+            };
+            return Err(CodexErr::Fatal(message));
+        }
         if allow_provider_model_fallback
             && let Some(requested_model) = config.model.as_ref()
             && model != *requested_model

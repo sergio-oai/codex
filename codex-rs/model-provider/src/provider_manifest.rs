@@ -1,15 +1,23 @@
 use std::collections::HashSet;
 
 use codex_models_manager::bundled_models_response;
-use codex_models_manager::model_info::model_info_from_slug;
+use codex_models_manager::model_info::BASE_INSTRUCTIONS;
+use codex_protocol::config_types::ReasoningSummary;
+use codex_protocol::openai_models::ConfigShellToolType;
 use codex_protocol::openai_models::ModelInfo;
 use codex_protocol::openai_models::ModelServiceTier;
 use codex_protocol::openai_models::ModelVisibility;
 use codex_protocol::openai_models::ReasoningEffort;
 use codex_protocol::openai_models::ReasoningEffortPreset;
+use codex_protocol::openai_models::TruncationPolicyConfig;
+use codex_protocol::openai_models::WebSearchToolType;
+use codex_protocol::openai_models::default_input_modalities;
 use serde::Deserialize;
 
 const SUPPORTED_SCHEMA_VERSION: u32 = 1;
+// Keep manifest-provided token limits in the range that downstream code can
+// safely multiply while deriving compaction thresholds.
+const MAX_SAFE_MODEL_TOKEN_LIMIT: i64 = i64::MAX / 9;
 
 /// Safe provider-owned metadata used to build an authoritative model catalog.
 ///
@@ -57,6 +65,9 @@ pub(crate) fn parse_provider_manifest(body: &[u8]) -> Result<Vec<ModelInfo>, Str
             "unsupported provider manifest schema_version {}; expected {SUPPORTED_SCHEMA_VERSION}",
             manifest.schema_version
         ));
+    }
+    if manifest.models.is_empty() {
+        return Err("provider manifest must contain at least one model".to_string());
     }
 
     let bundled_models = bundled_models_response()
@@ -115,11 +126,10 @@ fn to_model_info(
     let priority = i32::try_from(priority)
         .map_err(|_| "provider manifest contains too many models".to_string())?;
 
-    let mut model = bundled_models
+    let bundled_model = bundled_models
         .iter()
-        .find(|model| model.slug == manifest_model.id)
-        .cloned()
-        .unwrap_or_else(|| model_info_from_slug(&manifest_model.id));
+        .find(|model| model.slug == manifest_model.id);
+    let mut model = safe_provider_manifest_model_info(&manifest_model.id, bundled_model);
     model.slug = manifest_model.id;
     model.display_name = if manifest_model.display_name.trim().is_empty() {
         model.slug.clone()
@@ -161,9 +171,68 @@ fn to_model_info(
     Ok(model)
 }
 
+/// Builds a provider-neutral model descriptor from an explicit allowlist of
+/// local-only metadata.
+///
+/// A manifest may reuse the slug of a bundled OpenAI model, but that must not
+/// opt a custom provider into bundled wire-format capabilities such as
+/// Responses Lite. Local prompt text remains a Codex-owned decision, so known
+/// bundled prompts are safe to preserve.
+fn safe_provider_manifest_model_info(slug: &str, bundled_model: Option<&ModelInfo>) -> ModelInfo {
+    ModelInfo {
+        slug: slug.to_string(),
+        display_name: slug.to_string(),
+        description: None,
+        default_reasoning_level: None,
+        supported_reasoning_levels: Vec::new(),
+        shell_type: ConfigShellToolType::Default,
+        visibility: ModelVisibility::None,
+        supported_in_api: true,
+        priority: 99,
+        additional_speed_tiers: Vec::new(),
+        service_tiers: Vec::new(),
+        default_service_tier: None,
+        availability_nux: None,
+        upgrade: None,
+        base_instructions: bundled_model.map_or_else(
+            || BASE_INSTRUCTIONS.to_string(),
+            |model| model.base_instructions.clone(),
+        ),
+        model_messages: bundled_model.and_then(|model| model.model_messages.clone()),
+        include_skills_usage_instructions: false,
+        supports_reasoning_summary_parameter: true,
+        default_reasoning_summary: ReasoningSummary::Auto,
+        support_verbosity: false,
+        default_verbosity: None,
+        apply_patch_tool_type: None,
+        web_search_tool_type: WebSearchToolType::Text,
+        truncation_policy: TruncationPolicyConfig::bytes(/*limit*/ 10_000),
+        supports_parallel_tool_calls: false,
+        supports_image_detail_original: false,
+        context_window: None,
+        max_context_window: None,
+        auto_compact_token_limit: None,
+        comp_hash: None,
+        effective_context_window_percent: 95,
+        experimental_supported_tools: Vec::new(),
+        input_modalities: default_input_modalities(),
+        used_fallback_model_metadata: false,
+        supports_search_tool: false,
+        use_responses_lite: false,
+        auto_review_model_override: None,
+        tool_mode: None,
+        multi_agent_version: None,
+    }
+}
+
 fn positive_limit(name: &str, value: Option<i64>) -> Result<Option<i64>, String> {
     if value.is_some_and(|value| value <= 0) {
         return Err(format!("provider manifest model {name} must be positive"));
+    }
+    if value.is_some_and(|value| value > MAX_SAFE_MODEL_TOKEN_LIMIT) {
+        return Err(format!(
+            "provider manifest model {name} must be no greater than {MAX_SAFE_MODEL_TOKEN_LIMIT}"
+        ));
     }
     Ok(value)
 }

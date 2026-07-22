@@ -16,9 +16,8 @@ use std::future::Future;
 use std::path::PathBuf;
 use std::pin::Pin;
 use std::sync::Arc;
-use std::sync::atomic::AtomicBool;
-use std::sync::atomic::Ordering;
 use std::time::Duration;
+use std::time::Instant;
 use tokio::sync::RwLock;
 use tokio::sync::TryLockError;
 use tracing::Instrument as _;
@@ -232,7 +231,14 @@ pub struct OpenAiModelsManager {
     remote_models: RwLock<Vec<ModelInfo>>,
     etag: RwLock<Option<String>>,
     cache_manager: Option<ModelsCacheManager>,
-    authoritative_catalog_initialized: AtomicBool,
+    /// Last successful fetch for an authoritative in-memory catalog.
+    ///
+    /// Provider manifests intentionally bypass the shared on-disk model cache
+    /// because that cache is not provider-scoped. Keep the same bounded
+    /// freshness semantics in memory so long-lived sessions can discover
+    /// manifest changes without forcing every lookup online.
+    authoritative_catalog_fetched_at: RwLock<Option<Instant>>,
+    authoritative_catalog_ttl: Duration,
     endpoint_client: SharedModelsEndpointClient,
     auth_manager: Option<Arc<AuthManager>>,
 }
@@ -282,7 +288,8 @@ impl OpenAiModelsManager {
             remote_models: RwLock::new(remote_models),
             etag: RwLock::new(None),
             cache_manager,
-            authoritative_catalog_initialized: AtomicBool::new(false),
+            authoritative_catalog_fetched_at: RwLock::new(None),
+            authoritative_catalog_ttl: DEFAULT_MODEL_CACHE_TTL,
             endpoint_client,
             auth_manager,
         }
@@ -300,6 +307,50 @@ impl StaticModelsManager {
 }
 
 impl ModelsManager for OpenAiModelsManager {
+    fn get_default_model<'a>(
+        &'a self,
+        model: &'a Option<String>,
+        allow_provider_model_fallback: bool,
+        refresh_strategy: RefreshStrategy,
+        http_client_factory: HttpClientFactory,
+    ) -> ModelsManagerFuture<'a, String> {
+        Box::pin(
+            async move {
+                let uses_authoritative_catalog = self.endpoint_client.catalog_policy()
+                    == ModelCatalogPolicy::AuthoritativeRemote;
+
+                // Preserve the existing bundled-overlay behavior: explicitly
+                // configured models are accepted without consulting /models.
+                // Authoritative provider manifests opt into catalog-aware
+                // fallback only when the caller requests it.
+                if let Some(model) = model.as_ref()
+                    && (!uses_authoritative_catalog || !allow_provider_model_fallback)
+                {
+                    return model.to_string();
+                }
+
+                let available_models = self
+                    .list_models(refresh_strategy, http_client_factory)
+                    .await;
+                if uses_authoritative_catalog {
+                    return model_from_authoritative_catalog(
+                        model,
+                        allow_provider_model_fallback,
+                        available_models,
+                    );
+                }
+
+                default_model_from_available(available_models)
+            }
+            .instrument(tracing::info_span!(
+                "get_default_model",
+                model.provided = model.is_some(),
+                allow_provider_model_fallback,
+                refresh_strategy = %refresh_strategy
+            )),
+        )
+    }
+
     fn raw_model_catalog(
         &self,
         refresh_strategy: RefreshStrategy,
@@ -361,6 +412,7 @@ impl OpenAiModelsManager {
     async fn refresh_if_new_etag(&self, etag: String, http_client_factory: HttpClientFactory) {
         let current_etag = self.get_etag().await;
         if current_etag.clone().is_some() && current_etag.as_deref() == Some(etag.as_str()) {
+            self.renew_authoritative_catalog_ttl().await;
             if let Some(cache_manager) = self.cache_manager.as_ref()
                 && let Err(err) = cache_manager.renew_cache_ttl().await
             {
@@ -400,11 +452,9 @@ impl OpenAiModelsManager {
             }
             RefreshStrategy::OnlineIfUncached => {
                 if self.endpoint_client.catalog_policy() == ModelCatalogPolicy::AuthoritativeRemote
-                    && self
-                        .authoritative_catalog_initialized
-                        .load(Ordering::Acquire)
+                    && self.authoritative_catalog_is_fresh().await
                 {
-                    info!("models cache: using in-memory models for OnlineIfUncached");
+                    info!("models cache: using fresh in-memory models for OnlineIfUncached");
                     return Ok(());
                 }
                 // Try cache first, fall back to online if unavailable
@@ -433,8 +483,7 @@ impl OpenAiModelsManager {
             .await?;
         self.apply_remote_models(models.clone()).await;
         if self.endpoint_client.catalog_policy() == ModelCatalogPolicy::AuthoritativeRemote {
-            self.authoritative_catalog_initialized
-                .store(true, Ordering::Release);
+            *self.authoritative_catalog_fetched_at.write().await = Some(Instant::now());
         }
         *self.etag.write().await = etag.clone();
         if let Some(cache_manager) = self.cache_manager.as_ref() {
@@ -453,6 +502,20 @@ impl OpenAiModelsManager {
 
     async fn get_etag(&self) -> Option<String> {
         self.etag.read().await.clone()
+    }
+
+    async fn authoritative_catalog_is_fresh(&self) -> bool {
+        self.authoritative_catalog_fetched_at
+            .read()
+            .await
+            .as_ref()
+            .is_some_and(|fetched_at| fetched_at.elapsed() < self.authoritative_catalog_ttl)
+    }
+
+    async fn renew_authoritative_catalog_ttl(&self) {
+        if self.endpoint_client.catalog_policy() == ModelCatalogPolicy::AuthoritativeRemote {
+            *self.authoritative_catalog_fetched_at.write().await = Some(Instant::now());
+        }
     }
 
     /// Replace the cached remote models and rebuild the derived presets list.
@@ -535,20 +598,11 @@ impl ModelsManager for StaticModelsManager {
                 let available_models = self
                     .list_models(refresh_strategy, http_client_factory)
                     .await;
-                let requested_model = model.as_deref();
-
-                if allow_provider_model_fallback {
-                    if requested_model_is_available(requested_model, &available_models)
-                        && let Some(requested_model) = requested_model
-                    {
-                        return requested_model.to_string();
-                    }
-                    return default_model_from_available(available_models);
-                }
-
-                model
-                    .clone()
-                    .unwrap_or_else(|| default_model_from_available(available_models))
+                model_from_authoritative_catalog(
+                    model,
+                    allow_provider_model_fallback,
+                    available_models,
+                )
             }
             .instrument(tracing::info_span!(
                 "get_default_model",
@@ -607,6 +661,38 @@ fn default_model_from_available(available: Vec<ModelPreset>) -> String {
         .or_else(|| available.first())
         .map(|model| model.model.clone())
         .unwrap_or_default()
+}
+
+fn model_from_authoritative_catalog(
+    model: &Option<String>,
+    allow_provider_model_fallback: bool,
+    available_models: Vec<ModelPreset>,
+) -> String {
+    let requested_model = model.as_deref();
+
+    // A provider manifest is validated to be non-empty before it becomes an
+    // authoritative catalog. If no models are available here, the initial
+    // fetch failed (or no catalog has been loaded yet); do not turn an
+    // explicitly configured model into an empty request model during a
+    // transient manifest outage.
+    if available_models.is_empty()
+        && let Some(requested_model) = requested_model
+    {
+        return requested_model.to_string();
+    }
+
+    if allow_provider_model_fallback {
+        if requested_model_is_available(requested_model, &available_models)
+            && let Some(requested_model) = requested_model
+        {
+            return requested_model.to_string();
+        }
+        return default_model_from_available(available_models);
+    }
+
+    model
+        .clone()
+        .unwrap_or_else(|| default_model_from_available(available_models))
 }
 
 fn requested_model_is_available(

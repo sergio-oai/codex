@@ -457,9 +457,13 @@ impl ModelInfo {
     }
 
     pub fn auto_compact_token_limit(&self) -> Option<i64> {
-        let context_limit = self
-            .resolved_context_window()
-            .map(|context_window| (context_window * 9) / 10);
+        let context_limit = self.resolved_context_window().map(|context_window| {
+            // Split before multiplying so malformed or future larger model
+            // metadata cannot overflow while deriving the 90% threshold.
+            let whole_tenths = (context_window / 10) * 9;
+            let remainder_tenths = ((context_window % 10) * 9) / 10;
+            whole_tenths + remainder_tenths
+        });
         let config_limit = self.auto_compact_token_limit;
         if let Some(context_limit) = context_limit {
             return Some(
@@ -1202,6 +1206,18 @@ mod tests {
 
         assert_eq!(model.resolved_context_window(), Some(400_000));
         assert_eq!(model.auto_compact_token_limit(), Some(360_000));
+    }
+
+    #[test]
+    fn auto_compact_token_limit_handles_maximum_context_window_without_overflow() {
+        let model = ModelInfo {
+            context_window: Some(i64::MAX),
+            ..test_model(/*spec*/ None)
+        };
+        let expected_limit =
+            i64::try_from((i128::from(i64::MAX) * 9) / 10).expect("threshold fits in i64");
+
+        assert_eq!(model.auto_compact_token_limit(), Some(expected_limit));
     }
 
     #[test]

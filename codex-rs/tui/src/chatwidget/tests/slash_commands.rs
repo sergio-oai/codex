@@ -1,5 +1,8 @@
 use super::*;
+use crate::bottom_pane::slash_commands::BuiltinCommandFlags;
 use crate::bottom_pane::slash_commands::ServiceTierCommand;
+use crate::bottom_pane::slash_commands::commands_for_input;
+use crate::bottom_pane::slash_commands::find_slash_command;
 use pretty_assertions::assert_eq;
 use serial_test::serial;
 
@@ -135,6 +138,42 @@ async fn service_tier_commands_lowercase_catalog_names() {
             name: "fast".to_string(),
             description: expected_description,
         }]
+    );
+}
+
+#[tokio::test]
+async fn model_without_service_tiers_hides_fast_controls() {
+    let (mut chat, _rx, _op_rx) = make_chatwidget_manual(Some("gpt-5.4")).await;
+    let mut preset = get_available_model(&chat, "gpt-5.4");
+    preset.additional_speed_tiers.clear();
+    preset.service_tiers.clear();
+    preset.default_service_tier = None;
+    chat.model_catalog = std::sync::Arc::new(ModelCatalog::new(vec![preset]));
+    chat.set_feature_enabled(Feature::FastMode, /*enabled*/ true);
+    chat.sync_service_tier_commands();
+
+    assert_eq!(
+        chat.current_model_service_tier_commands(),
+        Vec::<ServiceTierCommand>::new()
+    );
+    assert!(!chat.can_toggle_fast_mode_from_keybinding());
+
+    let service_tier_commands = chat.current_model_service_tier_commands();
+    let popup_flags = BuiltinCommandFlags {
+        // The feature is enabled in this test; the missing catalog tier, not
+        // feature gating, is what should hide /fast.
+        service_tier_commands_enabled: true,
+        ..Default::default()
+    };
+    assert_eq!(
+        find_slash_command("fast", popup_flags, &service_tier_commands),
+        None
+    );
+    assert!(
+        commands_for_input(popup_flags, &service_tier_commands)
+            .iter()
+            .all(|command| command.command() != "fast"),
+        "the slash-command popup should not advertise /fast"
     );
 }
 

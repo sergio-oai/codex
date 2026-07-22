@@ -24,7 +24,11 @@ use pretty_assertions::assert_eq;
 use serde_json::json;
 use tempfile::TempDir;
 use tokio::time::timeout;
+use wiremock::Mock;
 use wiremock::MockServer;
+use wiremock::ResponseTemplate;
+use wiremock::matchers::method;
+use wiremock::matchers::path;
 
 const DEFAULT_TIMEOUT: Duration = Duration::from_secs(10);
 const INVALID_REQUEST_ERROR_CODE: i64 = -32600;
@@ -253,6 +257,91 @@ openai_base_url = "{server_uri}/v1"
         1,
         "expected a single /models request"
     );
+    Ok(())
+}
+
+#[tokio::test]
+async fn list_models_uses_opted_in_provider_manifest_as_source_of_truth() -> Result<()> {
+    let server = MockServer::start().await;
+    Mock::given(method("GET"))
+        .and(path("/v1/codex/provider-manifest"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "schema_version": 1,
+            "models": [{
+                "id": "venado-only",
+                "display_name": "Venado only",
+                "description": "Only advertised by the configured provider manifest",
+                "context_window": 32_000,
+                "max_input_tokens": 24_000,
+                "default_reasoning_effort": "medium",
+                "supported_reasoning_efforts": ["medium"],
+                "service_tiers": []
+            }]
+        })))
+        .mount(&server)
+        .await;
+
+    let codex_home = TempDir::new()?;
+    std::fs::write(
+        codex_home.path().join("config.toml"),
+        format!(
+            r#"
+model_provider = "venado"
+
+[model_providers.venado]
+name = "Venado"
+base_url = "{}/v1"
+experimental_bearer_token = "venado-test-token"
+wire_api = "responses"
+provider_manifest_path = "codex/provider-manifest"
+"#,
+            server.uri()
+        ),
+    )?;
+
+    let mut mcp = TestAppServer::builder()
+        .with_codex_home(codex_home.path())
+        .without_auto_env()
+        .build_initialized()
+        .await?;
+    let ModelListResponse {
+        data: items,
+        next_cursor,
+    } = mcp
+        .request(|request_id| ClientRequest::ModelList {
+            request_id,
+            params: ModelListParams {
+                limit: Some(100),
+                cursor: None,
+                include_hidden: None,
+            },
+        })
+        .await?;
+
+    assert_eq!(items.len(), 1);
+    assert_eq!(items[0].id, "venado-only");
+    assert_eq!(items[0].model, "venado-only");
+    assert!(items[0].service_tiers.is_empty());
+    assert!(items[0].additional_speed_tiers.is_empty());
+    assert!(next_cursor.is_none());
+
+    let requests = server
+        .received_requests()
+        .await
+        .expect("mock server should capture requests");
+    assert!(
+        requests
+            .iter()
+            .any(|request| request.url.path() == "/v1/codex/provider-manifest"),
+        "expected the opted-in provider manifest to be requested"
+    );
+    assert!(
+        requests
+            .iter()
+            .all(|request| request.url.path() != "/v1/models"),
+        "an opted-in provider manifest should replace the ordinary /models request"
+    );
+    server.verify().await;
     Ok(())
 }
 

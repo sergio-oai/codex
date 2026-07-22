@@ -384,6 +384,65 @@ async fn ignores_session_prefix_messages_when_truncating() {
 }
 
 #[tokio::test]
+async fn model_managers_are_scoped_to_the_effective_thread_provider() {
+    let temp_dir = tempdir().expect("tempdir");
+    let mut config = test_config().await;
+    config.codex_home = temp_dir.path().join("codex-home").abs();
+    config.cwd = config.codex_home.abs();
+    std::fs::create_dir_all(&config.codex_home).expect("create codex home");
+
+    let manager = ThreadManager::with_models_provider_and_home_for_tests(
+        CodexAuth::from_api_key("dummy"),
+        config.model_provider.clone(),
+        config.codex_home.to_path_buf(),
+        Arc::new(codex_exec_server::EnvironmentManager::default_for_tests()),
+    );
+    let startup_manager = manager.get_models_manager();
+    let matching_manager = manager
+        .state
+        .models_manager_for_config(&config, manager.auth_manager())
+        .await;
+    assert!(Arc::ptr_eq(&startup_manager, &matching_manager));
+
+    let mut manifest_config = config.clone();
+    manifest_config.model_provider_id = "venado".to_string();
+    manifest_config.model_provider.name = "Venado".to_string();
+    manifest_config.model_provider.base_url = Some("https://venado.example/v1".to_string());
+    manifest_config.model_provider.provider_manifest_path =
+        Some("codex/provider-manifest".to_string());
+    let manifest_manager = manager
+        .state
+        .models_manager_for_config(&manifest_config, manager.auth_manager())
+        .await;
+    assert!(!Arc::ptr_eq(&startup_manager, &manifest_manager));
+
+    let same_manifest_manager = manager
+        .state
+        .models_manager_for_config(&manifest_config, manager.auth_manager())
+        .await;
+    assert!(Arc::ptr_eq(&manifest_manager, &same_manifest_manager));
+
+    let other_auth_manager = AuthManager::from_auth_for_testing(CodexAuth::from_api_key("other"));
+    let other_auth_models_manager = manager
+        .state
+        .models_manager_for_config(&config, Arc::clone(&other_auth_manager))
+        .await;
+    assert!(
+        !Arc::ptr_eq(&startup_manager, &other_auth_models_manager),
+        "a manager must not be reused across distinct auth managers"
+    );
+
+    let same_other_auth_models_manager = manager
+        .state
+        .models_manager_for_config(&config, other_auth_manager)
+        .await;
+    assert!(Arc::ptr_eq(
+        &other_auth_models_manager,
+        &same_other_auth_models_manager
+    ));
+}
+
+#[tokio::test]
 async fn shutdown_all_threads_bounded_submits_shutdown_to_every_thread() {
     let temp_dir = tempdir().expect("tempdir");
     let mut config = test_config().await;

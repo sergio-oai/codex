@@ -149,6 +149,7 @@ provider_manifest_path = "codex/provider-manifest"
         provider.provider_manifest_path.as_deref(),
         Some("codex/provider-manifest")
     );
+    assert_eq!(provider.validate(), Ok(()));
 }
 
 #[test]
@@ -158,6 +159,11 @@ fn test_validate_provider_manifest_path_rejects_non_relative_paths() {
         "/codex/provider-manifest",
         "https://example.com/manifest",
         "codex/../manifest",
+        "codex/%2e%2e/manifest",
+        "codex/%2E./manifest",
+        "codex/%2fadmin",
+        "codex/%5cadmin",
+        r"codex\..\manifest",
         "codex/manifest?token=secret",
         "codex/manifest#fragment",
     ] {

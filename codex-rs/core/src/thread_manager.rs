@@ -48,6 +48,7 @@ use codex_protocol::config_types::CollaborationModeMask;
 use codex_protocol::error::CodexErr;
 use codex_protocol::error::Result as CodexResult;
 use codex_protocol::openai_models::ModelPreset;
+use codex_protocol::openai_models::ModelsResponse;
 use codex_protocol::protocol::Event;
 use codex_protocol::protocol::EventMsg;
 use codex_protocol::protocol::InitialHistory;
@@ -270,6 +271,7 @@ pub(crate) struct ThreadManagerState {
     thread_created_tx: broadcast::Sender<ThreadId>,
     auth_manager: Arc<AuthManager>,
     models_manager: SharedModelsManager,
+    models_manager_registry: RwLock<Vec<ModelsManagerEntry>>,
     environment_manager: Arc<EnvironmentManager>,
     skills_service: Arc<SkillsService>,
     plugins_manager: Arc<PluginsManager>,
@@ -286,6 +288,44 @@ pub(crate) struct ThreadManagerState {
     analytics_events_client: Option<AnalyticsEventsClient>,
     // Captures submitted ops for testing purpose when test mode is enabled.
     ops_log: Option<SharedCapturedOps>,
+}
+
+/// A model catalog belongs to the effective provider configuration that
+/// fetched it. App-server threads can select providers independently, so a
+/// process-wide manager is only safe for an exact provider/catalog match.
+struct ModelsManagerEntry {
+    model_provider: ModelProviderInfo,
+    model_catalog: Option<ModelsResponse>,
+    codex_home: AbsolutePathBuf,
+    // A models manager captures provider-scoped auth when it is built. Keep
+    // auth identity in the cache key so two app-server callers with the same
+    // provider config cannot reuse one another's credentials or auth-mode
+    // filtering.
+    auth_manager: Arc<AuthManager>,
+    manager: SharedModelsManager,
+}
+
+impl ModelsManagerEntry {
+    fn from_config(
+        config: &Config,
+        auth_manager: Arc<AuthManager>,
+        manager: SharedModelsManager,
+    ) -> Self {
+        Self {
+            model_provider: config.model_provider.clone(),
+            model_catalog: config.model_catalog.clone(),
+            codex_home: config.codex_home.clone(),
+            auth_manager,
+            manager,
+        }
+    }
+
+    fn matches(&self, config: &Config, auth_manager: &Arc<AuthManager>) -> bool {
+        self.model_provider == config.model_provider
+            && self.model_catalog == config.model_catalog
+            && self.codex_home == config.codex_home
+            && Arc::ptr_eq(&self.auth_manager, auth_manager)
+    }
 }
 
 pub fn build_models_manager(
@@ -365,11 +405,17 @@ impl ThreadManager {
             config.bundled_skills_enabled(),
             restriction_product,
         ));
+        let models_manager_registry = RwLock::new(vec![ModelsManagerEntry::from_config(
+            config,
+            Arc::clone(&auth_manager),
+            Arc::clone(&models_manager),
+        )]);
         Self {
             state: Arc::new(ThreadManagerState {
                 threads: Arc::new(RwLock::new(HashMap::new())),
                 thread_created_tx,
                 models_manager,
+                models_manager_registry,
                 environment_manager,
                 skills_service,
                 plugins_manager,
@@ -478,18 +524,27 @@ impl ThreadManager {
         let thread_store: Arc<dyn ThreadStore> = Arc::new(LocalThreadStore::new(
             LocalThreadStoreConfig {
                 codex_home: codex_home.clone(),
-                sqlite: codex_state::SqliteConfig::new_for_testing(absolute_codex_home),
+                sqlite: codex_state::SqliteConfig::new_for_testing(absolute_codex_home.clone()),
                 default_model_provider_id: OPENAI_PROVIDER_ID.to_string(),
             },
             state_db.clone(),
         ));
         let agent_graph_store = local_agent_graph_store_from_state_db(state_db.as_ref());
+        let models_manager = create_model_provider(provider.clone(), Some(auth_manager.clone()))
+            .models_manager(codex_home, /*config_model_catalog*/ None);
+        let models_manager_registry = RwLock::new(vec![ModelsManagerEntry {
+            model_provider: provider,
+            model_catalog: None,
+            codex_home: absolute_codex_home,
+            auth_manager: Arc::clone(&auth_manager),
+            manager: Arc::clone(&models_manager),
+        }]);
         Self {
             state: Arc::new(ThreadManagerState {
                 threads: Arc::new(RwLock::new(HashMap::new())),
                 thread_created_tx,
-                models_manager: create_model_provider(provider, Some(auth_manager.clone()))
-                    .models_manager(codex_home, /*config_model_catalog*/ None),
+                models_manager,
+                models_manager_registry,
                 environment_manager,
                 skills_service,
                 plugins_manager,
@@ -1112,6 +1167,41 @@ impl ThreadManagerState {
         self.agent_graph_store.clone()
     }
 
+    async fn models_manager_for_config(
+        &self,
+        config: &Config,
+        auth_manager: Arc<AuthManager>,
+    ) -> SharedModelsManager {
+        if let Some(manager) = self
+            .models_manager_registry
+            .read()
+            .await
+            .iter()
+            .find(|entry| entry.matches(config, &auth_manager))
+            .map(|entry| Arc::clone(&entry.manager))
+        {
+            return manager;
+        }
+
+        // Build outside the write lock: provider construction is local today,
+        // but keeping the critical section small avoids serializing unrelated
+        // thread starts if that ever changes.
+        let manager = build_models_manager(config, Arc::clone(&auth_manager));
+        let mut registry = self.models_manager_registry.write().await;
+        if let Some(existing) = registry
+            .iter()
+            .find(|entry| entry.matches(config, &auth_manager))
+        {
+            return Arc::clone(&existing.manager);
+        }
+        registry.push(ModelsManagerEntry::from_config(
+            config,
+            auth_manager,
+            Arc::clone(&manager),
+        ));
+        manager
+    }
+
     pub(crate) async fn list_thread_ids(&self) -> Vec<ThreadId> {
         self.threads
             .read()
@@ -1639,13 +1729,16 @@ impl ThreadManagerState {
                 forked_from_thread_id,
             )
             .await;
+        let models_manager = self
+            .models_manager_for_config(&config, Arc::clone(&auth_manager))
+            .await;
         let (session, io) = Box::pin(Session::spawn(SessionSpawnArgs {
             config,
             allow_provider_model_fallback,
             user_instructions,
             installation_id: self.installation_id.clone(),
             auth_manager,
-            models_manager: Arc::clone(&self.models_manager),
+            models_manager,
             environment_manager: Arc::clone(&self.environment_manager),
             skills_service: Arc::clone(&self.skills_service),
             plugins_manager: Arc::clone(&self.plugins_manager),

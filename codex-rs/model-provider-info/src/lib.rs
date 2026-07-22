@@ -565,12 +565,17 @@ fn validate_provider_manifest_path(path: &str) -> std::result::Result<(), String
         || path.contains("://")
         || path.contains('?')
         || path.contains('#')
-        || path
-            .split('/')
-            .any(|segment| segment.is_empty() || segment == "." || segment == "..")
+        || path.split('/').any(|segment| {
+            segment.is_empty()
+                || segment == "."
+                || segment == ".."
+                || !segment.chars().all(|character| {
+                    character.is_ascii_alphanumeric() || matches!(character, '-' | '.' | '_' | '~')
+                })
+        })
     {
         return Err(
-            "provider_manifest_path must be a same-origin relative path without query, fragment, or dot segments"
+            "provider_manifest_path must be a same-origin relative path of unreserved segments without query, fragment, or dot segments"
                 .to_string(),
         );
     }

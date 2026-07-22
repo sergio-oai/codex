@@ -113,6 +113,84 @@ model = "gpt-5.4-mini"
 }
 
 #[tokio::test]
+async fn thread_start_uses_manifest_catalog_for_overridden_provider() -> Result<()> {
+    let server = MockServer::start().await;
+    Mock::given(method("GET"))
+        .and(path("/v1/codex/provider-manifest"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "schema_version": 1,
+            "models": [{
+                "id": "venado-only",
+                "display_name": "Venado only",
+                "description": "Only available through the overridden provider",
+                "context_window": 32_000,
+                "max_input_tokens": 24_000,
+                "default_reasoning_effort": "medium",
+                "supported_reasoning_efforts": ["medium"],
+                "service_tiers": []
+            }]
+        })))
+        .expect(1)
+        .mount(&server)
+        .await;
+
+    let codex_home = TempDir::new()?;
+    std::fs::write(
+        codex_home.path().join("config.toml"),
+        format!(
+            r#"
+model_provider = "openai"
+
+[model_providers.venado]
+name = "Venado"
+base_url = "{}/v1"
+experimental_bearer_token = "venado-test-token"
+wire_api = "responses"
+provider_manifest_path = "codex/provider-manifest"
+"#,
+            server.uri()
+        ),
+    )?;
+    let mut mcp = TestAppServer::builder()
+        .with_codex_home(codex_home.path())
+        .build_initialized()
+        .await?;
+
+    let response = mcp
+        .start_thread(ThreadStartParams {
+            model_provider: Some("venado".to_string()),
+            allow_provider_model_fallback: true,
+            ..Default::default()
+        })
+        .await?;
+
+    assert_eq!(response.model, "venado-only");
+    let requests = server
+        .received_requests()
+        .await
+        .expect("mock server should capture requests");
+    assert_eq!(
+        requests
+            .iter()
+            .filter(|request| request.url.path() == "/v1/codex/provider-manifest")
+            .count(),
+        1,
+        "expected the overridden provider manifest request; saw {:?}",
+        requests
+            .iter()
+            .map(|request| request.url.path().to_string())
+            .collect::<Vec<_>>()
+    );
+    assert!(
+        requests
+            .iter()
+            .all(|request| request.url.path() != "/v1/models"),
+        "an overridden manifest provider should not fall back to the startup provider's /models"
+    );
+    Ok(())
+}
+
+#[tokio::test]
 async fn thread_start_warns_for_exec_policy_parse_failure_after_initialize() -> Result<()> {
     let codex_home = TempDir::new()?;
     let mut mcp = TestAppServer::builder()
