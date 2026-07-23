@@ -174,6 +174,8 @@ pub struct ThreadStartResponse {
     /// Whether the effective provider uses an authoritative provider manifest.
     /// Older app servers omit this hint; clients should then preserve their
     /// existing provider-identification fallback.
+    // Current servers deliberately emit both true and false. An explicit false
+    // keeps remote clients from misclassifying a same-ID local manifest provider.
     #[serde(default)]
     pub model_provider_uses_manifest: Option<bool>,
     pub service_tier: Option<String>,
@@ -412,6 +414,8 @@ pub struct ThreadResumeResponse {
     /// Whether the effective provider uses an authoritative provider manifest.
     /// Older app servers omit this hint; clients should then preserve their
     /// existing provider-identification fallback.
+    // Current servers deliberately emit both true and false. An explicit false
+    // keeps remote clients from misclassifying a same-ID local manifest provider.
     #[serde(default)]
     pub model_provider_uses_manifest: Option<bool>,
     pub service_tier: Option<String>,
@@ -609,6 +613,8 @@ pub struct ThreadForkResponse {
     /// Whether the effective provider uses an authoritative provider manifest.
     /// Older app servers omit this hint; clients should then preserve their
     /// existing provider-identification fallback.
+    // Current servers deliberately emit both true and false. An explicit false
+    // keeps remote clients from misclassifying a same-ID local manifest provider.
     #[serde(default)]
     pub model_provider_uses_manifest: Option<bool>,
     pub service_tier: Option<String>,
@@ -1551,6 +1557,8 @@ pub struct ThreadStartedNotification {
     /// Whether the effective provider uses an authoritative provider manifest.
     /// Older app servers omit this hint; clients should then preserve their
     /// existing provider-identification fallback.
+    // Current servers deliberately emit both true and false. An explicit false
+    // keeps remote clients from misclassifying a same-ID local manifest provider.
     #[serde(default)]
     pub model_provider_uses_manifest: Option<bool>,
 }

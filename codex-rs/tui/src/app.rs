@@ -534,9 +534,10 @@ fn model_catalog_provenance_for_manifest_status(
 /// Classify the startup catalog from the server that actually produced it.
 ///
 /// New servers report the exact catalog source in the existing bootstrap
-/// model/list response. Older servers keep the historic local inference for
-/// ordinary providers so a protocol version mismatch does not add a new
-/// model/list RPC to regular resume/fork flows. When the local provider has
+/// model/list response, including explicit false for ordinary catalogs. Older
+/// servers keep the historic local inference for ordinary providers so a
+/// protocol version mismatch does not add a new model/list RPC to regular
+/// resume/fork flows. When the local provider has
 /// explicitly opted into a manifest, an older remote server is ambiguous;
 /// refresh that thread-scoped catalog before reuse.
 fn bootstrap_model_catalog_provenance(
@@ -560,7 +561,9 @@ fn bootstrap_model_catalog_provenance(
 /// Prefer the loaded thread's effective provider hint when a new app server
 /// supplies it. Older servers omit the hint, so preserve the existing local
 /// provider-ID lookup instead of adding a new model-list RPC for ordinary
-/// remote sessions.
+/// remote sessions. An explicit false must win over local config because a
+/// remote thread can use an ordinary provider with the same ID as a locally
+/// configured manifest provider.
 fn effective_thread_provider_uses_manifest(
     config: &Config,
     provider_id: &str,

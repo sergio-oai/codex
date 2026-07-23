@@ -45,6 +45,7 @@ pub struct ModelListParams {
     ///
     /// When omitted, model/list preserves its existing process-level behavior
     /// and lists the startup provider catalog.
+    // Keep the existing v2 optional-parameter wire convention: None serializes as null.
     #[ts(optional = nullable)]
     pub thread_id: Option<String>,
     /// Opaque pagination cursor returned by a previous call.
@@ -138,6 +139,8 @@ pub struct ModelListResponse {
     /// Whether the catalog source uses an authoritative provider manifest.
     /// Older app servers omit this hint; clients should then preserve their
     /// existing compatibility fallback.
+    // Current servers deliberately emit both true and false. An explicit false
+    // keeps remote clients from misclassifying a same-ID local manifest provider.
     #[serde(default)]
     pub model_provider_uses_manifest: Option<bool>,
     /// Opaque cursor to pass to the next call to continue after the last item.
