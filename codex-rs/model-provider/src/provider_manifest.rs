@@ -68,6 +68,11 @@ struct ProviderManifestModel {
     default_reasoning_effort: Option<ReasoningEffort>,
     #[serde(default)]
     supported_reasoning_efforts: Vec<ReasoningEffort>,
+    /// Whether this provider accepts the Responses API reasoning.summary
+    /// parameter. Reasoning effort and reasoning summaries are separate wire
+    /// capabilities, so v1 manifests must opt in explicitly.
+    #[serde(default)]
+    supports_reasoning_summary_parameter: bool,
     #[serde(default)]
     supports_personality: bool,
     /// Modalities accepted by this provider model. Omitted v1 manifests are
@@ -212,6 +217,13 @@ fn to_model_info(
         .into_iter()
         .map(|effort| reasoning_preset(&model, effort))
         .collect();
+    model.supports_reasoning_summary_parameter =
+        manifest_model.supports_reasoning_summary_parameter;
+    model.default_reasoning_summary = if manifest_model.supports_reasoning_summary_parameter {
+        ReasoningSummary::Auto
+    } else {
+        ReasoningSummary::None
+    };
     model.visibility = ModelVisibility::List;
     model.supported_in_api = true;
     model.priority = priority;
@@ -281,8 +293,8 @@ fn safe_provider_manifest_model_info(slug: &str, bundled_model: Option<&ModelInf
         model_messages: bundled_model.and_then(|model| model.model_messages.clone()),
         include_skills_usage_instructions: bundled_model
             .is_some_and(|model| model.include_skills_usage_instructions),
-        supports_reasoning_summary_parameter: true,
-        default_reasoning_summary: ReasoningSummary::Auto,
+        supports_reasoning_summary_parameter: false,
+        default_reasoning_summary: ReasoningSummary::None,
         support_verbosity: false,
         default_verbosity: None,
         apply_patch_tool_type: bundled_model.and_then(|model| model.apply_patch_tool_type.clone()),

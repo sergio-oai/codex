@@ -99,6 +99,11 @@ async fn provider_manifest_selects_model_and_omits_unsupported_fast_tier_impl() 
     let body = response.body_json();
     assert_eq!(body["model"].as_str(), Some("venado-only"));
     assert_eq!(body.get("service_tier"), None);
+    assert_eq!(
+        body["reasoning"].get("summary"),
+        None,
+        "manifest providers must explicitly opt into reasoning.summary"
+    );
 
     let requests = server
         .received_requests()

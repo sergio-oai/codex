@@ -96,6 +96,13 @@ impl ChatWidget {
         };
 
         let choices = reasoning_choices(&preset);
+        if choices.is_empty() {
+            self.add_info_message(
+                format!("Reasoning shortcuts are unavailable for {current_model}."),
+                /*hint*/ None,
+            );
+            return true;
+        }
         let configured_effort = self
             .effective_reasoning_effort()
             .unwrap_or_else(|| preset.default_reasoning_effort.clone());
@@ -179,7 +186,7 @@ fn reasoning_choices(preset: &ModelPreset) -> Vec<ReasoningEffortConfig> {
         .partition(|effort| !ChatWidget::is_advanced_reasoning_effort(effort));
     advanced_choices.sort_by_key(|effort| matches!(effort, ReasoningEffortConfig::Ultra));
     choices.extend(advanced_choices);
-    if choices.is_empty() {
+    if choices.is_empty() && preset.default_reasoning_effort != ReasoningEffortConfig::None {
         choices.push(preset.default_reasoning_effort.clone());
     }
     choices

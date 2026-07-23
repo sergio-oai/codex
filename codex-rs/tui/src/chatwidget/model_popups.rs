@@ -114,14 +114,16 @@ impl ChatWidget {
                         });
                     })]
                 } else {
+                    let default_effort =
+                        Self::default_reasoning_effort_for_model_selection(&preset);
                     let should_prompt_plan_mode_scope = self
                         .should_prompt_plan_mode_reasoning_scope(
                             model.as_str(),
-                            Some(preset.default_reasoning_effort.clone()),
+                            default_effort.clone(),
                         );
                     self.model_selection_actions(
                         model.clone(),
-                        Some(preset.default_reasoning_effort.clone()),
+                        default_effort,
                         should_prompt_plan_mode_scope,
                     )
                 };
@@ -201,21 +203,34 @@ impl ChatWidget {
                 (!preset.description.is_empty()).then_some(preset.description.to_string());
             let is_current = preset.model.as_str() == self.current_model();
             let single_supported_effort = preset.supported_reasoning_efforts.len() == 1;
-            let preset_for_action = preset.clone();
-            let actions: Vec<SelectionAction> = vec![Box::new(move |tx| {
-                let preset_for_event = preset_for_action.clone();
-                tx.send(AppEvent::OpenReasoningPopup {
-                    model: preset_for_event,
-                });
-            })];
+            let selects_without_reasoning_popup = preset.supported_reasoning_efforts.is_empty()
+                && Self::default_reasoning_effort_for_model_selection(&preset).is_none();
+            let actions: Vec<SelectionAction> = if selects_without_reasoning_popup {
+                let should_prompt_plan_mode_scope =
+                    self.should_prompt_plan_mode_reasoning_scope(preset.model.as_str(), None);
+                self.model_selection_actions(
+                    preset.model.clone(),
+                    /*effort_for_action*/ None,
+                    should_prompt_plan_mode_scope,
+                )
+            } else {
+                let preset_for_action = preset.clone();
+                vec![Box::new(move |tx| {
+                    let preset_for_event = preset_for_action.clone();
+                    tx.send(AppEvent::OpenReasoningPopup {
+                        model: preset_for_event,
+                    });
+                })]
+            };
             items.push(SelectionItem {
                 name: preset.model.clone(),
                 description,
                 is_current,
                 is_default: preset.is_default,
                 actions,
-                dismiss_on_select: single_supported_effort,
-                dismiss_parent_on_child_accept: !single_supported_effort,
+                dismiss_on_select: single_supported_effort || selects_without_reasoning_popup,
+                dismiss_parent_on_child_accept: !single_supported_effort
+                    && !selects_without_reasoning_popup,
                 ..Default::default()
             });
         }
@@ -266,6 +281,31 @@ impl ChatWidget {
                 )));
             }
         })]
+    }
+
+    /// `ModelPreset` uses `ReasoningEffort::None` as a legacy placeholder
+    /// when a model has no default. Only treat it as an explicit override when
+    /// the catalog advertises it; otherwise choose an advertised effort or omit
+    /// the override entirely. Valid ordinary catalogs keep their existing
+    /// selection behavior.
+    fn default_reasoning_effort_for_model_selection(
+        preset: &ModelPreset,
+    ) -> Option<ReasoningEffortConfig> {
+        if preset.supported_reasoning_efforts.is_empty() {
+            return (preset.default_reasoning_effort != ReasoningEffortConfig::None)
+                .then(|| preset.default_reasoning_effort.clone());
+        }
+        if preset
+            .supported_reasoning_efforts
+            .iter()
+            .any(|option| option.effort == preset.default_reasoning_effort)
+        {
+            return Some(preset.default_reasoning_effort.clone());
+        }
+        preset
+            .supported_reasoning_efforts
+            .first()
+            .map(|option| option.effort.clone())
     }
 
     fn should_prompt_plan_mode_reasoning_scope(
@@ -400,6 +440,19 @@ impl ChatWidget {
     pub(crate) fn open_reasoning_popup(&mut self, preset: ModelPreset) {
         let default_effort = preset.default_reasoning_effort.clone();
         let supported = &preset.supported_reasoning_efforts;
+        if supported.is_empty() && default_effort == ReasoningEffortConfig::None {
+            let selected_model = preset.model;
+            if self.should_prompt_plan_mode_reasoning_scope(&selected_model, None) {
+                self.app_event_tx
+                    .send(AppEvent::OpenPlanReasoningScopePrompt {
+                        model: selected_model,
+                        effort: None,
+                    });
+            } else {
+                self.apply_model_and_effort(selected_model, None);
+            }
+            return;
+        }
         let in_plan_mode =
             self.collaboration_modes_enabled() && self.active_mode_kind() == ModeKind::Plan;
 

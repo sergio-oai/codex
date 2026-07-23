@@ -3269,6 +3269,75 @@ async fn model_reasoning_selection_popup_applies_custom_effort() {
     );
 }
 
+#[tokio::test]
+async fn manifest_model_without_reasoning_efforts_selects_without_override() {
+    let (mut chat, mut rx, _op_rx) = make_chatwidget_manual(Some("gpt-5.4")).await;
+    chat.config.model_provider.provider_manifest_path = Some("codex/provider-manifest".to_string());
+    let mut preset = get_available_model(&chat, "gpt-5.4");
+    preset.id = "manifest-no-reasoning".to_string();
+    preset.model = "manifest-no-reasoning".to_string();
+    preset.default_reasoning_effort = ReasoningEffortConfig::None;
+    preset.supported_reasoning_efforts.clear();
+    while rx.try_recv().is_ok() {}
+
+    chat.open_all_models_popup(vec![preset]);
+    chat.handle_key_event(KeyEvent::from(KeyCode::Enter));
+
+    let mut selected_model = None;
+    let mut selected_effort = None;
+    let mut persisted_selection = None;
+    while let Ok(event) = rx.try_recv() {
+        match event {
+            AppEvent::UpdateModel(model) => selected_model = Some(model),
+            AppEvent::UpdateReasoningEffort(effort) => selected_effort = Some(effort),
+            AppEvent::PersistModelSelection { model, effort } => {
+                persisted_selection = Some((model, effort));
+            }
+            _ => {}
+        }
+    }
+    assert_eq!(selected_model.as_deref(), Some("manifest-no-reasoning"));
+    assert_eq!(selected_effort, Some(None));
+    assert_eq!(
+        persisted_selection,
+        Some(("manifest-no-reasoning".to_string(), None))
+    );
+}
+
+#[tokio::test]
+async fn manifest_auto_model_without_reasoning_efforts_selects_without_override() {
+    let (mut chat, mut rx, _op_rx) = make_chatwidget_manual(Some("gpt-5.4")).await;
+    chat.config.model_provider.provider_manifest_path = Some("codex/provider-manifest".to_string());
+    let mut preset = get_available_model(&chat, "gpt-5.4");
+    preset.id = "codex-auto-manifest".to_string();
+    preset.model = "codex-auto-manifest".to_string();
+    preset.display_name = "codex-auto-manifest".to_string();
+    preset.show_in_picker = true;
+    preset.default_reasoning_effort = ReasoningEffortConfig::None;
+    preset.supported_reasoning_efforts.clear();
+    while rx.try_recv().is_ok() {}
+
+    chat.open_model_popup_with_presets(vec![preset]);
+    chat.handle_key_event(KeyEvent::from(KeyCode::Enter));
+
+    let mut selected_effort = None;
+    let mut persisted_selection = None;
+    while let Ok(event) = rx.try_recv() {
+        match event {
+            AppEvent::UpdateReasoningEffort(effort) => selected_effort = Some(effort),
+            AppEvent::PersistModelSelection { model, effort } => {
+                persisted_selection = Some((model, effort));
+            }
+            _ => {}
+        }
+    }
+    assert_eq!(selected_effort, Some(None));
+    assert_eq!(
+        persisted_selection,
+        Some(("codex-auto-manifest".to_string(), None))
+    );
+}
+
 async fn select_ultra_with_multi_agent_thread_limit(max_threads: usize) -> (bool, Vec<String>) {
     let (mut chat, mut rx, _op_rx) = make_chatwidget_manual(Some("gpt-5.4")).await;
     chat.config
@@ -3443,6 +3512,31 @@ async fn reasoning_down_shortcuts_lower_reasoning_effort() {
         ReasoningEffortConfig::Low,
     )
     .await;
+}
+
+#[tokio::test]
+async fn reasoning_shortcut_does_not_invent_none_for_no_reasoning_model() {
+    let (mut chat, mut rx, _op_rx) = make_chatwidget_manual(Some("gpt-5.4")).await;
+    chat.thread_id = Some(ThreadId::new());
+    let mut preset = get_available_model(&chat, "gpt-5.4");
+    preset.id = "manifest-no-reasoning".to_string();
+    preset.model = "manifest-no-reasoning".to_string();
+    preset.default_reasoning_effort = ReasoningEffortConfig::None;
+    preset.supported_reasoning_efforts.clear();
+    chat.model_catalog = std::sync::Arc::new(ModelCatalog::new(vec![preset]));
+    chat.set_model("manifest-no-reasoning");
+    chat.set_reasoning_effort(None);
+    while rx.try_recv().is_ok() {}
+
+    chat.handle_key_event(KeyEvent::new(KeyCode::Char('.'), KeyModifiers::ALT));
+
+    let events = std::iter::from_fn(|| rx.try_recv().ok()).collect::<Vec<_>>();
+    assert!(
+        events
+            .iter()
+            .all(|event| !matches!(event, AppEvent::UpdateReasoningEffort(Some(_)))),
+        "no-reasoning models must not receive a synthetic none effort: {events:?}"
+    );
 }
 
 #[tokio::test]

@@ -1,3 +1,4 @@
+use codex_protocol::config_types::ReasoningSummary;
 use codex_protocol::openai_models::ApplyPatchToolType;
 use codex_protocol::openai_models::ConfigShellToolType;
 use codex_protocol::openai_models::InputModality;
@@ -65,6 +66,8 @@ fn parses_safe_model_metadata_and_clears_bundled_service_tiers() {
     assert_eq!(model.context_window, Some(163_200));
     assert_eq!(model.max_context_window, Some(163_200));
     assert_eq!(model.default_reasoning_level, Some(ReasoningEffort::Medium));
+    assert!(!model.supports_reasoning_summary_parameter);
+    assert_eq!(model.default_reasoning_summary, ReasoningSummary::None);
     assert_eq!(model.visibility, ModelVisibility::List);
     assert_eq!(model.service_tiers, Vec::new());
     assert_eq!(model.additional_speed_tiers, Vec::<String>::new());
@@ -88,6 +91,30 @@ fn parses_safe_model_metadata_and_clears_bundled_service_tiers() {
     // the provider-owned custom-model default.
     assert_eq!(model.multi_agent_version, None);
     assert!(!ModelPreset::from(model.clone()).supports_fast_mode());
+}
+
+#[test]
+fn reasoning_summary_support_requires_explicit_manifest_opt_in() {
+    let body = serde_json::to_vec(&json!({
+        "schema_version": 1,
+        "models": [{
+            "id": "venado-reasoning",
+            "display_name": "Venado reasoning",
+            "max_input_tokens": 16_384,
+            "supported_reasoning_efforts": ["medium"],
+            "supports_reasoning_summary_parameter": true,
+            "service_tiers": []
+        }]
+    }))
+    .expect("manifest serializes");
+
+    let model = parse_provider_manifest(&body)
+        .expect("manifest parses")
+        .pop()
+        .expect("one manifest model");
+
+    assert!(model.supports_reasoning_summary_parameter);
+    assert_eq!(model.default_reasoning_summary, ReasoningSummary::Auto);
 }
 
 #[test]
