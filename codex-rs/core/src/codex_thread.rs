@@ -65,11 +65,11 @@ use codex_rollout::state_db::StateDbHandle;
 pub struct ThreadConfigSnapshot {
     pub model: String,
     pub model_provider_id: String,
-    /// Whether this thread's effective provider catalog comes from an
-    /// authoritative provider manifest. App-server lifecycle responses expose
-    /// this as an optional compatibility hint so clients can avoid unnecessary
-    /// model-list calls for ordinary providers while still recognizing
-    /// same-ID provider overrides.
+    /// Whether this thread's effective provider catalog is scoped by an
+    /// authoritative provider manifest or inherited manifest lineage.
+    /// App-server lifecycle responses expose this as an optional compatibility
+    /// hint so clients can avoid unnecessary model-list calls for ordinary
+    /// providers while still refreshing scoped descendant catalogs.
     pub model_provider_uses_manifest: bool,
     pub service_tier: Option<String>,
     pub approval_policy: AskForApproval,
@@ -584,6 +584,12 @@ impl CodexThread {
 
     pub fn state_db(&self) -> Option<StateDbHandle> {
         self.session.state_db()
+    }
+
+    /// Whether this thread belongs to a provider-manifest lineage whose model
+    /// catalog must remain provider-scoped across detached child work.
+    pub fn model_provider_manifest_lineage(&self) -> bool {
+        self.session.services.model_provider_manifest_lineage
     }
 
     pub async fn config_snapshot(&self) -> ThreadConfigSnapshot {

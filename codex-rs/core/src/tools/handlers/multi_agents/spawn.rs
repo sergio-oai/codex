@@ -112,6 +112,8 @@ async fn handle_spawn_agent(
         &session.services.models_manager,
         &spawn_models_manager,
     );
+    let model_provider_manifest_lineage = session.services.model_provider_manifest_lineage
+        || config.model_provider.provider_manifest_path.is_some();
     if requires_manifest_scoped_handling {
         apply_requested_spawn_agent_model_overrides(
             &spawn_models_manager,
@@ -120,6 +122,7 @@ async fn handle_spawn_agent(
             args.model.as_deref(),
             args.reasoning_effort.clone(),
             role_locks,
+            model_provider_manifest_lineage,
         )
         .await?;
     } else {
@@ -141,6 +144,7 @@ async fn handle_spawn_agent(
             &config,
             role_locks,
             requires_manifest_scoped_handling,
+            model_provider_manifest_lineage,
         )
         .await?;
     }

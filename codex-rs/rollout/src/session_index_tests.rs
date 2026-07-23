@@ -40,6 +40,7 @@ fn write_rollout_with_metadata(path: &Path, thread_id: ThreadId) -> std::io::Res
                 agent_nickname: None,
                 agent_role: None,
                 model_provider: Some("test-provider".into()),
+                model_provider_manifest_lineage: false,
                 base_instructions: None,
                 dynamic_tools: None,
                 selected_capability_roots: Vec::new(),

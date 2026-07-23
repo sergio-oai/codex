@@ -312,6 +312,11 @@ struct ModelsManagerEntry {
     // provider catalog.
     auth_manager: Weak<AuthManager>,
     manager: Weak<dyn ModelsManager>,
+    // The startup manager for an ordinary provider intentionally remains
+    // process-wide for compatibility. Keep it out of provider-scoped lookups
+    // so an ordinary -> manifest -> startup-provider transition cannot
+    // accidentally recover that global catalog.
+    provider_scoped: bool,
 }
 
 impl ModelsManagerEntry {
@@ -349,11 +354,13 @@ impl ModelsManagerEntry {
         config: &Config,
         auth_manager: Arc<AuthManager>,
         manager: SharedModelsManager,
+        provider_scoped: bool,
     ) -> Self {
         Self {
             registry_key: Self::registry_key_for_config(config),
             auth_manager: Arc::downgrade(&auth_manager),
             manager: Arc::downgrade(&manager),
+            provider_scoped,
         }
     }
 
@@ -361,8 +368,9 @@ impl ModelsManagerEntry {
         &self,
         registry_key: &str,
         auth_manager: &Arc<AuthManager>,
+        provider_scoped: bool,
     ) -> Option<SharedModelsManager> {
-        if self.registry_key != registry_key {
+        if self.registry_key != registry_key || self.provider_scoped != provider_scoped {
             return None;
         }
 
@@ -459,6 +467,7 @@ impl ThreadManager {
             config,
             Arc::clone(&auth_manager),
             Arc::clone(&models_manager),
+            config.model_provider.provider_manifest_path.is_some(),
         )]);
         Self {
             state: Arc::new(ThreadManagerState {
@@ -591,6 +600,7 @@ impl ThreadManager {
             registry_key: ModelsManagerEntry::registry_key(&provider, &None, &absolute_codex_home),
             auth_manager: Arc::downgrade(&auth_manager),
             manager: Arc::downgrade(&models_manager),
+            provider_scoped: startup_provider_uses_manifest,
         }]);
         Self {
             state: Arc::new(ThreadManagerState {
@@ -726,20 +736,18 @@ impl ThreadManager {
     ) -> CodexResult<Vec<ModelPreset>> {
         let thread = self.get_thread(thread_id).await?;
         let config = thread.config().await;
-        let models_manager = self
-            .state
-            .models_manager_for_config(
-                config.as_ref(),
-                Arc::clone(&thread.session.services.auth_manager),
-            )
-            .await;
+        // A loaded thread already owns the exact provider-scoped manager that
+        // validated its startup config. Re-resolving from config alone can
+        // lose manifest lineage after an ordinary -> manifest -> ordinary
+        // transition and accidentally fall back to the process catalog.
+        let models_manager = Arc::clone(&thread.session.services.models_manager);
         models_manager
             .list_models_with_refresh_error(refresh_strategy, config.http_client_factory())
             .await
     }
 
-    /// Report whether the exact catalog source selected by model/list uses
-    /// an authoritative provider manifest.
+    /// Report whether the exact catalog source selected by model/list is
+    /// scoped by an authoritative provider manifest or inherited lineage.
     ///
     /// Unscoped lists use the startup provider. Thread-scoped lists follow the
     /// loaded thread's effective config, including same-ID provider overrides.
@@ -751,9 +759,9 @@ impl ThreadManager {
             Some(thread_id) => Ok(self
                 .get_thread(thread_id)
                 .await?
-                .config_snapshot()
-                .await
-                .model_provider_uses_manifest),
+                .session
+                .services
+                .model_provider_manifest_lineage),
             None => Ok(self.state.startup_provider_uses_manifest),
         }
     }
@@ -854,6 +862,7 @@ impl ThreadManager {
             options,
             /*forked_from_thread_id*/ None,
             Arc::clone(&self.state.auth_manager),
+            /*inherited_model_provider_manifest_lineage*/ false,
         ))
         .await
     }
@@ -873,6 +882,26 @@ impl ThreadManager {
             options,
             /*forked_from_thread_id*/ None,
             auth_manager,
+            /*inherited_model_provider_manifest_lineage*/ false,
+        ))
+        .await
+    }
+
+    /// Start a detached worker with the caller's session-scoped authentication
+    /// and provider-manifest lineage. Memory consolidation uses this after an
+    /// opted-in thread switches to an ordinary provider, where config alone no
+    /// longer proves that the child still needs an isolated model catalog.
+    pub async fn start_thread_with_auth_manager_and_model_provider_manifest_lineage(
+        &self,
+        options: StartThreadOptions,
+        auth_manager: Arc<AuthManager>,
+        model_provider_manifest_lineage: bool,
+    ) -> CodexResult<NewThread> {
+        Box::pin(self.start_thread_inner(
+            options,
+            /*forked_from_thread_id*/ None,
+            auth_manager,
+            model_provider_manifest_lineage,
         ))
         .await
     }
@@ -882,6 +911,7 @@ impl ThreadManager {
         options: StartThreadOptions,
         forked_from_thread_id: Option<ThreadId>,
         auth_manager: Arc<AuthManager>,
+        inherited_model_provider_manifest_lineage: bool,
     ) -> CodexResult<NewThread> {
         let environments = options.environments.unwrap_or_else(|| {
             default_thread_environment_selections(
@@ -907,6 +937,7 @@ impl ThreadManager {
             session_source,
             /*parent_thread_id*/ None,
             forked_from_thread_id,
+            inherited_model_provider_manifest_lineage,
             thread_source,
             options.dynamic_tools,
             options.metrics_service_name,
@@ -959,8 +990,13 @@ impl ThreadManager {
         // even after switching to an ordinary provider. Preserve the source
         // thread's identity across every fork hop.
         let auth_manager = Arc::clone(&fork_source.session.services.auth_manager);
-        self.start_thread_inner(options, Some(forked_from_thread_id), auth_manager)
-            .await
+        self.start_thread_inner(
+            options,
+            Some(forked_from_thread_id),
+            auth_manager,
+            /*inherited_model_provider_manifest_lineage*/ false,
+        )
+        .await
     }
 
     pub async fn resume_thread_from_rollout(
@@ -1018,6 +1054,7 @@ impl ThreadManager {
             session_source,
             /*parent_thread_id*/ None,
             /*forked_from_thread_id*/ None,
+            /*inherited_model_provider_manifest_lineage*/ false,
             thread_source,
             Vec::new(),
             /*metrics_service_name*/ None,
@@ -1091,6 +1128,7 @@ impl ThreadManager {
             session_source,
             /*parent_thread_id*/ None,
             /*forked_from_thread_id*/ None,
+            /*inherited_model_provider_manifest_lineage*/ false,
             thread_source,
             Vec::new(),
             /*metrics_service_name*/ None,
@@ -1319,13 +1357,30 @@ impl ThreadManagerState {
         config: &Config,
         auth_manager: Arc<AuthManager>,
     ) -> SharedModelsManager {
+        self.models_manager_for_config_with_scope(
+            config,
+            auth_manager,
+            /*preserve_provider_scope*/ false,
+        )
+        .await
+    }
+
+    pub(crate) async fn models_manager_for_config_with_scope(
+        &self,
+        config: &Config,
+        auth_manager: Arc<AuthManager>,
+        preserve_provider_scope: bool,
+    ) -> SharedModelsManager {
         let target_uses_manifest = config.model_provider.provider_manifest_path.is_some();
         // Provider-scoped catalogs are an opt-in extension. Preserve the
         // process-wide manager behavior when neither side opted in so ordinary
         // provider switches keep their historical cache and auth semantics.
         // If the process started from an authoritative manifest, however, an
-        // ordinary target cannot safely reuse that manifest catalog.
-        if !target_uses_manifest && !self.startup_provider_uses_manifest {
+        // ordinary target cannot safely reuse that manifest catalog. The same
+        // is true for descendants of a manifest-backed thread after they
+        // switch back to ordinary providers.
+        if !target_uses_manifest && !self.startup_provider_uses_manifest && !preserve_provider_scope
+        {
             return Arc::clone(&self.models_manager);
         }
         let registry_key = ModelsManagerEntry::registry_key_for_config(config);
@@ -1335,7 +1390,7 @@ impl ThreadManagerState {
             registry.retain(ModelsManagerEntry::is_live);
             if let Some(manager) = registry
                 .iter()
-                .find_map(|entry| entry.matching_manager(&registry_key, &auth_manager))
+                .find_map(|entry| entry.matching_manager(&registry_key, &auth_manager, true))
             {
                 return manager;
             }
@@ -1359,7 +1414,7 @@ impl ThreadManagerState {
         registry.retain(ModelsManagerEntry::is_live);
         if let Some(existing) = registry
             .iter()
-            .find_map(|entry| entry.matching_manager(&registry_key, &auth_manager))
+            .find_map(|entry| entry.matching_manager(&registry_key, &auth_manager, true))
         {
             return existing;
         }
@@ -1367,8 +1422,36 @@ impl ThreadManagerState {
             config,
             auth_manager,
             Arc::clone(&manager),
+            true,
         ));
         manager
+    }
+
+    async fn inherits_provider_manifest_lineage(
+        &self,
+        initial_history: &InitialHistory,
+        parent_thread_id: Option<ThreadId>,
+        forked_from_thread_id: Option<ThreadId>,
+    ) -> bool {
+        if initial_history.get_model_provider_manifest_lineage() {
+            return true;
+        }
+        // Older rollouts predate the persisted lineage bit. When their source
+        // thread is still live, retain a runtime fallback so a running
+        // resume/fork can still inherit the right scoped manager.
+        let Some(source_thread_id) = parent_thread_id
+            .or(forked_from_thread_id)
+            .or_else(|| initial_history.get_resumed_parent_thread_id())
+        else {
+            return false;
+        };
+        let Ok(source_thread) = self.get_thread(source_thread_id).await else {
+            return false;
+        };
+        source_thread
+            .session
+            .services
+            .model_provider_manifest_lineage
     }
 
     pub(crate) async fn list_thread_ids(&self) -> Vec<ThreadId> {
@@ -1685,6 +1768,7 @@ impl ThreadManagerState {
             session_source,
             parent_thread_id,
             forked_from_thread_id,
+            /*inherited_model_provider_manifest_lineage*/ false,
             thread_source,
             Vec::new(),
             metrics_service_name,
@@ -1728,6 +1812,7 @@ impl ThreadManagerState {
             session_source,
             parent_thread_id,
             /*forked_from_thread_id*/ None,
+            /*inherited_model_provider_manifest_lineage*/ false,
             thread_source,
             Vec::new(),
             /*metrics_service_name*/ None,
@@ -1776,6 +1861,7 @@ impl ThreadManagerState {
             session_source,
             parent_thread_id,
             forked_from_thread_id,
+            /*inherited_model_provider_manifest_lineage*/ false,
             thread_source,
             Vec::new(),
             /*metrics_service_name*/ None,
@@ -1819,6 +1905,7 @@ impl ThreadManagerState {
             self.session_source.clone(),
             parent_thread_id,
             forked_from_thread_id,
+            /*inherited_model_provider_manifest_lineage*/ false,
             thread_source,
             dynamic_tools,
             metrics_service_name,
@@ -1845,6 +1932,7 @@ impl ThreadManagerState {
         session_source: SessionSource,
         parent_thread_id: Option<ThreadId>,
         forked_from_thread_id: Option<ThreadId>,
+        inherited_model_provider_manifest_lineage: bool,
         thread_source: Option<ThreadSource>,
         dynamic_tools: Vec<codex_protocol::dynamic_tools::DynamicToolSpec>,
         metrics_service_name: Option<String>,
@@ -1902,8 +1990,23 @@ impl ThreadManagerState {
                 forked_from_thread_id,
             )
             .await;
+        let inherited_manifest_lineage = self
+            .inherits_provider_manifest_lineage(
+                &initial_history,
+                parent_thread_id.clone(),
+                forked_from_thread_id.clone(),
+            )
+            .await;
+        let model_provider_manifest_lineage = self.startup_provider_uses_manifest
+            || config.model_provider.provider_manifest_path.is_some()
+            || inherited_manifest_lineage
+            || inherited_model_provider_manifest_lineage;
         let models_manager = self
-            .models_manager_for_config(&config, Arc::clone(&auth_manager))
+            .models_manager_for_config_with_scope(
+                &config,
+                Arc::clone(&auth_manager),
+                model_provider_manifest_lineage,
+            )
             .await;
         let (session, io) = Box::pin(Session::spawn(SessionSpawnArgs {
             config,
@@ -1912,6 +2015,7 @@ impl ThreadManagerState {
             installation_id: self.installation_id.clone(),
             auth_manager,
             models_manager,
+            model_provider_manifest_lineage,
             environment_manager: Arc::clone(&self.environment_manager),
             skills_service: Arc::clone(&self.skills_service),
             plugins_manager: Arc::clone(&self.plugins_manager),

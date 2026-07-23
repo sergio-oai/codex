@@ -38,6 +38,7 @@ pub(super) async fn create_thread(
             params.dynamic_tools,
         )
         .with_session_id(params.session_id)
+        .with_model_provider_manifest_lineage(params.metadata.model_provider_manifest_lineage)
         .with_selected_capability_roots(params.selected_capability_roots)
         .with_multi_agent_version(params.multi_agent_version)
         .with_history_mode(params.history_mode)

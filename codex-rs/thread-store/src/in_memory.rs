@@ -137,6 +137,7 @@ mod tests {
                     metadata: ThreadPersistenceMetadata {
                         cwd: None,
                         model_provider: "test-provider".to_string(),
+                        model_provider_manifest_lineage: false,
                         memory_mode: ThreadMemoryMode::Enabled,
                     },
                 })
@@ -336,6 +337,7 @@ mod tests {
         ThreadPersistenceMetadata {
             cwd: None,
             model_provider: "test-provider".to_string(),
+            model_provider_manifest_lineage: false,
             memory_mode: ThreadMemoryMode::Enabled,
         }
     }
@@ -437,6 +439,7 @@ impl InMemoryThreadStore {
             source: params.source.clone(),
             thread_source: params.thread_source.clone(),
             model_provider: Some(params.metadata.model_provider.clone()),
+            model_provider_manifest_lineage: params.metadata.model_provider_manifest_lineage,
             base_instructions: Some(params.base_instructions.clone()),
             dynamic_tools: (!params.dynamic_tools.is_empty()).then(|| params.dynamic_tools.clone()),
             selected_capability_roots: params.selected_capability_roots.clone(),

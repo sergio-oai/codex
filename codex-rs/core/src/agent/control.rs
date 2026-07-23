@@ -592,9 +592,16 @@ impl AgentControl {
         &self,
         config: &Config,
         auth_manager: Arc<AuthManager>,
+        parent_model_provider_manifest_lineage: bool,
     ) -> CodexResult<SharedModelsManager> {
         let state = self.upgrade()?;
-        Ok(state.models_manager_for_config(config, auth_manager).await)
+        Ok(state
+            .models_manager_for_config_with_scope(
+                config,
+                auth_manager,
+                parent_model_provider_manifest_lineage,
+            )
+            .await)
     }
 
     async fn inherited_environments_for_source(

@@ -682,6 +682,7 @@ fn write_rollout(path: &std::path::Path, thread_id: ThreadId, message: &str) -> 
             agent_nickname: None,
             agent_role: None,
             model_provider: None,
+            model_provider_manifest_lineage: false,
             base_instructions: None,
             dynamic_tools: None,
             selected_capability_roots: Vec::new(),

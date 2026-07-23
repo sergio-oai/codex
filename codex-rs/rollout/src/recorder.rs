@@ -98,6 +98,7 @@ pub enum RolloutRecorderParams {
         source: Box<SessionSource>,
         thread_source: Option<ThreadSource>,
         originator: String,
+        model_provider_manifest_lineage: bool,
         base_instructions: BaseInstructions,
         dynamic_tools: Vec<DynamicToolSpec>,
         selected_capability_roots: Vec<SelectedCapabilityRoot>,
@@ -192,6 +193,7 @@ impl RolloutRecorderParams {
             source: Box::new(source),
             thread_source,
             originator,
+            model_provider_manifest_lineage: false,
             base_instructions,
             dynamic_tools,
             selected_capability_roots: Vec::new(),
@@ -205,6 +207,20 @@ impl RolloutRecorderParams {
     pub fn with_session_id(mut self, session_id: SessionId) -> Self {
         if let Self::Create { session_id: id, .. } = &mut self {
             *id = session_id;
+        }
+        self
+    }
+
+    pub fn with_model_provider_manifest_lineage(
+        mut self,
+        model_provider_manifest_lineage: bool,
+    ) -> Self {
+        if let Self::Create {
+            model_provider_manifest_lineage: lineage,
+            ..
+        } = &mut self
+        {
+            *lineage = model_provider_manifest_lineage;
         }
         self
     }
@@ -785,6 +801,7 @@ impl RolloutRecorder {
                 source,
                 thread_source,
                 originator,
+                model_provider_manifest_lineage,
                 base_instructions,
                 dynamic_tools,
                 selected_capability_roots,
@@ -822,6 +839,7 @@ impl RolloutRecorder {
                     source: *source,
                     thread_source,
                     model_provider: Some(config.model_provider_id().to_string()),
+                    model_provider_manifest_lineage,
                     base_instructions: Some(base_instructions),
                     dynamic_tools: if dynamic_tools.is_empty() {
                         None

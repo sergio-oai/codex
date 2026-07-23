@@ -57,6 +57,10 @@ pub struct ThreadPersistenceMetadata {
     pub cwd: Option<PathBuf>,
     /// Model provider associated with the thread.
     pub model_provider: String,
+    /// Whether this thread belongs to a provider-manifest lineage whose model
+    /// catalog must remain provider-scoped after cold resume or fork.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub model_provider_manifest_lineage: bool,
     /// Memory mode associated with the live thread.
     pub memory_mode: MemoryMode,
 }

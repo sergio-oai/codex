@@ -486,6 +486,7 @@ impl Session {
         installation_id: String,
         auth_manager: Arc<AuthManager>,
         models_manager: SharedModelsManager,
+        model_provider_manifest_lineage: bool,
         exec_policy: Arc<ExecPolicyManager>,
         tx_event: Sender<Event>,
         agent_status: watch::Sender<AgentStatus>,
@@ -626,6 +627,7 @@ impl Session {
                             metadata: ThreadPersistenceMetadata {
                                 cwd: Some(config.cwd.to_path_buf()),
                                 model_provider: config.model_provider_id.clone(),
+                                model_provider_manifest_lineage,
                                 memory_mode: if config.memories.generate_memories {
                                     ThreadMemoryMode::Enabled
                                 } else {
@@ -655,6 +657,7 @@ impl Session {
                             metadata: ThreadPersistenceMetadata {
                                 cwd: Some(config.cwd.to_path_buf()),
                                 model_provider: config.model_provider_id.clone(),
+                                model_provider_manifest_lineage,
                                 memory_mode: if config.memories.generate_memories {
                                     ThreadMemoryMode::Enabled
                                 } else {
@@ -1081,6 +1084,7 @@ impl Session {
                 auth_manager: Arc::clone(&auth_manager),
                 session_telemetry,
                 models_manager: Arc::clone(&models_manager),
+                model_provider_manifest_lineage,
                 tool_approvals: Mutex::new(ApprovalStore::default()),
                 guardian_rejection_circuit_breaker: Mutex::new(Default::default()),
                 runtime_handle: tokio::runtime::Handle::current(),

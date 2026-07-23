@@ -2067,6 +2067,7 @@ mod tests {
         ThreadPersistenceMetadata {
             cwd: Some(std::env::current_dir().expect("cwd")),
             model_provider: "test-provider".to_string(),
+            model_provider_manifest_lineage: false,
             memory_mode: ThreadMemoryMode::Enabled,
         }
     }

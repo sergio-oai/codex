@@ -93,6 +93,8 @@ pub(crate) async fn run_codex_thread_interactive(
         instructions: parent_session.user_instructions().await,
         warnings: Vec::new(),
     };
+    let model_provider_manifest_lineage = parent_session.services.model_provider_manifest_lineage
+        || config.model_provider.provider_manifest_path.is_some();
     let (session, io) = Box::pin(Session::spawn(SessionSpawnArgs {
         config,
         allow_provider_model_fallback: false,
@@ -100,6 +102,7 @@ pub(crate) async fn run_codex_thread_interactive(
         installation_id: parent_session.installation_id.clone(),
         auth_manager,
         models_manager,
+        model_provider_manifest_lineage,
         environment_manager: parent_session
             .services
             .turn_environments

@@ -251,6 +251,7 @@ pub(crate) async fn apply_requested_spawn_agent_model_overrides(
     requested_model: Option<&str>,
     requested_reasoning_effort: Option<ReasoningEffort>,
     role_locks: AgentRoleModelLocks,
+    model_provider_manifest_lineage: bool,
 ) -> Result<(), FunctionCallError> {
     let requested_model = (!role_locks.model)
         .then(|| requested_model.or(turn.config.agent_default_subagent_model.as_deref()))
@@ -265,17 +266,18 @@ pub(crate) async fn apply_requested_spawn_agent_model_overrides(
         return Ok(());
     }
 
-    let refresh_strategy = if config.model_provider.provider_manifest_path.is_some() {
+    let uses_provider_scoped_catalog =
+        model_provider_manifest_lineage || config.model_provider.provider_manifest_path.is_some();
+    let refresh_strategy = if uses_provider_scoped_catalog {
         RefreshStrategy::OnlineIfUncached
     } else {
         RefreshStrategy::Offline
     };
-    if config.model_provider.provider_manifest_path.is_some() {
+    if uses_provider_scoped_catalog {
         // A role can lock the child model while the tool call supplies only a
-        // reasoning override. Load a newly selected manifest provider before
-        // either override branch asks for model metadata; otherwise the
-        // reasoning-only path sees bundled fallback metadata and rejects a
-        // model the manifest does advertise.
+        // reasoning override. Load a newly selected provider-scoped catalog
+        // before either override branch asks for model metadata; otherwise
+        // the reasoning-only path sees bundled fallback metadata.
         let _ = models_manager
             .list_models(refresh_strategy, config.http_client_factory())
             .await;
@@ -524,10 +526,12 @@ pub(crate) async fn validate_spawn_agent_role_settings(
     config: &Config,
     role_locks: AgentRoleModelLocks,
     requires_manifest_scoped_handling: bool,
+    model_provider_manifest_lineage: bool,
 ) -> Result<(), FunctionCallError> {
     let provider_changed = config.model_provider != turn.config.model_provider
         || config.model_catalog != turn.config.model_catalog;
     let uses_provider_manifest = config.model_provider.provider_manifest_path.is_some();
+    let uses_provider_scoped_catalog = uses_provider_manifest || model_provider_manifest_lineage;
     if !requires_manifest_scoped_handling {
         // `apply_legacy_ordinary_spawn_agent_model_overrides` already replays
         // origin/main's post-role reasoning check. Keep the newer
@@ -542,14 +546,14 @@ pub(crate) async fn validate_spawn_agent_role_settings(
         return Ok(());
     }
 
-    if uses_provider_manifest {
+    if uses_provider_scoped_catalog {
         let available_models = models_manager
             .list_models(
                 RefreshStrategy::OnlineIfUncached,
                 config.http_client_factory(),
             )
             .await;
-        if let Some(model) = config.model.as_deref() {
+        if uses_provider_manifest && let Some(model) = config.model.as_deref() {
             find_spawn_agent_model_name(&available_models, model, turn.multi_agent_version)?;
         }
     }
@@ -599,7 +603,11 @@ pub(crate) async fn models_manager_for_spawn_config(
     session
         .services
         .agent_control
-        .models_manager_for_config(config, Arc::clone(&session.services.auth_manager))
+        .models_manager_for_config(
+            config,
+            Arc::clone(&session.services.auth_manager),
+            session.services.model_provider_manifest_lineage,
+        )
         .await
         .map_err(|err| FunctionCallError::RespondToModel(format!("collab tool failed: {err}")))
 }
@@ -616,7 +624,10 @@ pub(crate) fn requires_manifest_scoped_spawn_handling(
     parent_models_manager: &SharedModelsManager,
     child_models_manager: &SharedModelsManager,
 ) -> bool {
-    parent_config.model_provider.provider_manifest_path.is_some()
+    parent_config
+        .model_provider
+        .provider_manifest_path
+        .is_some()
         || child_config.model_provider.provider_manifest_path.is_some()
         || !Arc::ptr_eq(parent_models_manager, child_models_manager)
 }

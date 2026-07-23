@@ -420,6 +420,9 @@ pub(crate) struct SessionSpawnArgs {
     pub(crate) installation_id: String,
     pub(crate) auth_manager: Arc<AuthManager>,
     pub(crate) models_manager: SharedModelsManager,
+    /// Whether this runtime belongs to a provider-manifest lineage whose
+    /// model catalog must stay provider-scoped across cold resume and fork.
+    pub(crate) model_provider_manifest_lineage: bool,
     pub(crate) environment_manager: Arc<EnvironmentManager>,
     pub(crate) skills_service: Arc<SkillsService>,
     pub(crate) plugins_manager: Arc<PluginsManager>,
@@ -513,6 +516,7 @@ impl Session {
             installation_id,
             auth_manager,
             models_manager,
+            model_provider_manifest_lineage,
             environment_manager,
             skills_service,
             plugins_manager,
@@ -589,13 +593,16 @@ impl Session {
         let config = Arc::new(config);
         let refresh_strategy = if session_source.is_non_root_agent()
             && config.model_provider.provider_manifest_path.is_none()
+            && !model_provider_manifest_lineage
         {
             codex_models_manager::manager::RefreshStrategy::Offline
         } else {
             // A child role can select a provider whose authoritative manifest
             // has not been loaded by the parent. OnlineIfUncached fetches that
-            // first catalog, while reusing a fresh in-memory manifest when the
-            // parent and child already share one.
+            // first catalog. The same applies after a manifest-backed lineage
+            // switches to an ordinary provider: its isolated manager cannot
+            // safely reuse the process-wide cache, so populate it online when
+            // needed while reusing a fresh in-memory catalog when available.
             codex_models_manager::manager::RefreshStrategy::OnlineIfUncached
         };
         if config.model.is_none()
@@ -762,6 +769,7 @@ impl Session {
             installation_id,
             auth_manager.clone(),
             models_manager.clone(),
+            model_provider_manifest_lineage,
             exec_policy,
             tx_event.clone(),
             agent_status_tx.clone(),
@@ -1731,12 +1739,19 @@ impl Session {
         state
             .session_configuration
             .apply(updates)
-            .map(|configuration| configuration.thread_config_snapshot())
+            .map(|configuration| {
+                let mut snapshot = configuration.thread_config_snapshot();
+                snapshot.model_provider_uses_manifest |=
+                    self.services.model_provider_manifest_lineage;
+                snapshot
+            })
     }
 
     pub(crate) async fn thread_config_snapshot(&self) -> ThreadConfigSnapshot {
         let state = self.state.lock().await;
-        state.session_configuration.thread_config_snapshot()
+        let mut snapshot = state.session_configuration.thread_config_snapshot();
+        snapshot.model_provider_uses_manifest |= self.services.model_provider_manifest_lineage;
+        snapshot
     }
 
     pub(crate) async fn set_app_server_client_info(

@@ -173,6 +173,7 @@ async fn state_db_init_backfills_before_returning() -> anyhow::Result<()> {
             agent_nickname: None,
             agent_role: None,
             model_provider: None,
+            model_provider_manifest_lineage: false,
             base_instructions: None,
             dynamic_tools: None,
             selected_capability_roots: Vec::new(),
@@ -507,6 +508,7 @@ async fn recorder_materializes_on_flush_with_pending_items() -> std::io::Result<
             Vec::new(),
         )
         .with_session_id(session_id)
+        .with_model_provider_manifest_lineage(true)
         .with_history_mode(ThreadHistoryMode::Paginated)
         .with_initial_window_id(initial_window_id.clone()),
     )
@@ -564,6 +566,7 @@ async fn recorder_materializes_on_flush_with_pending_items() -> std::io::Result<
         panic!("expected session metadata in rollout");
     };
     assert_eq!(session_meta.meta.session_id, session_id);
+    assert!(session_meta.meta.model_provider_manifest_lineage);
     assert_eq!(session_meta.meta.history_mode, ThreadHistoryMode::Paginated);
     assert_eq!(
         session_meta

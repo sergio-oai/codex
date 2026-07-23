@@ -71,6 +71,7 @@ pub(crate) struct MemoryStartupContext {
     thread: Arc<CodexThread>,
     thread_manager: Arc<ThreadManager>,
     auth_manager: Arc<AuthManager>,
+    model_provider_manifest_lineage: bool,
     provider: SharedModelProvider,
     session_telemetry: SessionTelemetry,
 }
@@ -194,6 +195,7 @@ impl MemoryStartupContext {
         provider: SharedModelProvider,
     ) -> Self {
         let model = config.model.as_deref().unwrap_or("unknown");
+        let model_provider_manifest_lineage = thread.model_provider_manifest_lineage();
         let session_telemetry = build_session_telemetry(
             &auth_manager,
             thread_id,
@@ -208,6 +210,7 @@ impl MemoryStartupContext {
             thread,
             thread_manager,
             auth_manager,
+            model_provider_manifest_lineage,
             provider,
             session_telemetry,
         }
@@ -396,7 +399,8 @@ impl MemoryStartupContext {
         config: Config,
         prompt: Vec<UserInput>,
     ) -> anyhow::Result<SpawnedConsolidationAgent> {
-        let uses_provider_manifest = config.model_provider.provider_manifest_path.is_some();
+        let model_provider_manifest_lineage = self.model_provider_manifest_lineage
+            || config.model_provider.provider_manifest_path.is_some();
         let start_options = StartThreadOptions {
             session_source: Some(SessionSource::Internal(
                 InternalSessionSource::MemoryConsolidation,
@@ -406,9 +410,13 @@ impl MemoryStartupContext {
         };
         let NewThread {
             thread_id, thread, ..
-        } = if uses_provider_manifest {
+        } = if model_provider_manifest_lineage {
             self.thread_manager
-                .start_thread_with_auth_manager(start_options, Arc::clone(&self.auth_manager))
+                .start_thread_with_auth_manager_and_model_provider_manifest_lineage(
+                    start_options,
+                    Arc::clone(&self.auth_manager),
+                    model_provider_manifest_lineage,
+                )
                 .await?
         } else {
             self.thread_manager.start_thread(start_options).await?

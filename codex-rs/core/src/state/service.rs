@@ -68,6 +68,9 @@ pub(crate) struct SessionServices {
     pub(crate) exec_policy: Arc<ExecPolicyManager>,
     pub(crate) auth_manager: Arc<AuthManager>,
     pub(crate) models_manager: SharedModelsManager,
+    /// Persisted opt-in lineage bit used to keep descendant model catalogs
+    /// provider-scoped after switching away from a manifest-backed provider.
+    pub(crate) model_provider_manifest_lineage: bool,
     pub(crate) session_telemetry: SessionTelemetry,
     pub(crate) tool_approvals: Mutex<ApprovalStore>,
     pub(crate) guardian_rejection_circuit_breaker: Mutex<GuardianRejectionCircuitBreaker>,

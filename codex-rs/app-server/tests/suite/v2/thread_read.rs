@@ -500,6 +500,7 @@ async fn thread_search_occurrences_reads_paginated_projection() -> Result<()> {
             metadata: ThreadPersistenceMetadata {
                 cwd: Some(codex_home.path().to_path_buf()),
                 model_provider: "mock_provider".to_string(),
+                model_provider_manifest_lineage: false,
                 memory_mode: ThreadMemoryMode::Enabled,
             },
         })
@@ -1477,6 +1478,7 @@ async fn paginated_history_lists_use_projected_turns_and_items() -> Result<()> {
             metadata: ThreadPersistenceMetadata {
                 cwd: Some(codex_home.path().to_path_buf()),
                 model_provider: "mock_provider".to_string(),
+                model_provider_manifest_lineage: false,
                 memory_mode: ThreadMemoryMode::Enabled,
             },
         })
@@ -2156,6 +2158,7 @@ async fn seed_pathless_store_thread(
             metadata: ThreadPersistenceMetadata {
                 cwd: None,
                 model_provider: "test-provider".to_string(),
+                model_provider_manifest_lineage: false,
                 memory_mode: ThreadMemoryMode::Disabled,
             },
         })

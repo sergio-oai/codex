@@ -21,6 +21,7 @@ use codex_protocol::protocol::AgentMessageEvent;
 use codex_protocol::protocol::InitialHistory;
 use codex_protocol::protocol::InternalSessionSource;
 use codex_protocol::protocol::ResumedHistory;
+use codex_protocol::protocol::RolloutItem;
 use codex_protocol::protocol::SessionMeta;
 use codex_protocol::protocol::SessionMetaLine;
 use codex_protocol::protocol::SessionSource;
@@ -483,6 +484,84 @@ async fn provider_manifest_model_managers_are_scoped_without_changing_regular_re
     assert!(
         Arc::ptr_eq(&startup_manager, &non_manifest_manager),
         "non-manifest provider overrides must keep the pre-feature startup manager"
+    );
+    let ordinary_manager_from_manifest_lineage = manager
+        .agent_control()
+        .models_manager_for_config(
+            &non_manifest_config,
+            manager.auth_manager(),
+            /*parent_model_provider_manifest_lineage*/ true,
+        )
+        .await
+        .expect("manifest lineage should preserve provider scope");
+    assert!(
+        !Arc::ptr_eq(&startup_manager, &ordinary_manager_from_manifest_lineage),
+        "ordinary descendants of a manifest provider need a provider-scoped manager"
+    );
+    let same_ordinary_manager_from_manifest_lineage = manager
+        .agent_control()
+        .models_manager_for_config(
+            &non_manifest_config,
+            manager.auth_manager(),
+            /*parent_model_provider_manifest_lineage*/ true,
+        )
+        .await
+        .expect("manifest-lineage ordinary manager should be reusable");
+    assert!(
+        Arc::ptr_eq(
+            &ordinary_manager_from_manifest_lineage,
+            &same_ordinary_manager_from_manifest_lineage
+        ),
+        "manifest-lineage ordinary providers should reuse their scoped manager"
+    );
+    let startup_provider_from_manifest_lineage = manager
+        .agent_control()
+        .models_manager_for_config(
+            &config,
+            manager.auth_manager(),
+            /*parent_model_provider_manifest_lineage*/ true,
+        )
+        .await
+        .expect("manifest lineage should not recover the process manager");
+    assert!(
+        !Arc::ptr_eq(&startup_manager, &startup_provider_from_manifest_lineage),
+        "manifest-lineage descendants returning to the startup provider must stay scoped"
+    );
+    let cold_resume_history = InitialHistory::Resumed(ResumedHistory {
+        conversation_id: ThreadId::default(),
+        history: Arc::new(vec![RolloutItem::SessionMeta(SessionMetaLine {
+            meta: SessionMeta {
+                parent_thread_id: Some(ThreadId::default()),
+                model_provider_manifest_lineage: true,
+                ..SessionMeta::default()
+            },
+            git: None,
+        })]),
+        rollout_path: None,
+    });
+    let inherited_manifest_lineage = manager
+        .state
+        .inherits_provider_manifest_lineage(
+            &cold_resume_history,
+            /*parent_thread_id*/ None,
+            /*forked_from_thread_id*/ None,
+        )
+        .await;
+    assert!(
+        inherited_manifest_lineage,
+        "cold resume must preserve persisted manifest lineage without a live parent"
+    );
+    let ordinary_manager_from_cold_resume = manager
+        .state
+        .models_manager_for_config_with_scope(
+            &non_manifest_config,
+            manager.auth_manager(),
+            inherited_manifest_lineage,
+        )
+        .await;
+    assert!(
+        !Arc::ptr_eq(&startup_manager, &ordinary_manager_from_cold_resume),
+        "cold-resumed ordinary descendants must not reuse the process catalog"
     );
 
     let manifest_startup_manager = ThreadManager::with_models_provider_and_home_for_tests(

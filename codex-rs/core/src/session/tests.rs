@@ -4214,6 +4214,7 @@ async fn attach_thread_persistence(session: &mut Session) -> PathBuf {
             metadata: ThreadPersistenceMetadata {
                 cwd: Some(config.cwd.to_path_buf()),
                 model_provider: config.model_provider_id.clone(),
+                model_provider_manifest_lineage: false,
                 memory_mode: if config.memories.generate_memories {
                     ThreadMemoryMode::Enabled
                 } else {
@@ -5629,6 +5630,7 @@ async fn session_new_fails_when_zsh_fork_enabled_without_packaged_zsh() {
         "11111111-1111-4111-8111-111111111111".to_string(),
         auth_manager,
         models_manager,
+        /*model_provider_manifest_lineage*/ false,
         Arc::new(ExecPolicyManager::default()),
         tx_event,
         agent_status_tx,
@@ -5813,6 +5815,7 @@ pub(crate) async fn make_session_and_context() -> (Session, TurnContext) {
         auth_manager: auth_manager.clone(),
         session_telemetry: session_telemetry.clone(),
         models_manager: Arc::clone(&models_manager),
+        model_provider_manifest_lineage: false,
         tool_approvals: Mutex::new(ApprovalStore::default()),
         guardian_rejection_circuit_breaker: Mutex::new(Default::default()),
         runtime_handle: tokio::runtime::Handle::current(),
@@ -6018,6 +6021,7 @@ async fn make_session_with_config_and_rx(
         "11111111-1111-4111-8111-111111111111".to_string(),
         auth_manager,
         models_manager,
+        /*model_provider_manifest_lineage*/ false,
         Arc::new(ExecPolicyManager::default()),
         tx_event,
         agent_status_tx,
@@ -6126,6 +6130,7 @@ async fn make_session_with_history_source_and_agent_control_and_rx(
         "11111111-1111-4111-8111-111111111111".to_string(),
         auth_manager,
         models_manager,
+        /*model_provider_manifest_lineage*/ false,
         Arc::new(ExecPolicyManager::default()),
         tx_event,
         agent_status_tx,
@@ -7398,6 +7403,7 @@ async fn shutdown_complete_does_not_append_to_thread_store_after_shutdown() {
             metadata: ThreadPersistenceMetadata {
                 cwd: Some(config.cwd.to_path_buf()),
                 model_provider: config.model_provider_id.clone(),
+                model_provider_manifest_lineage: false,
                 memory_mode: if config.memories.generate_memories {
                     ThreadMemoryMode::Enabled
                 } else {
@@ -7476,6 +7482,7 @@ async fn submission_loop_channel_close_runs_full_thread_teardown() {
             metadata: ThreadPersistenceMetadata {
                 cwd: Some(config.cwd.to_path_buf()),
                 model_provider: config.model_provider_id.clone(),
+                model_provider_manifest_lineage: false,
                 memory_mode: if config.memories.generate_memories {
                     ThreadMemoryMode::Enabled
                 } else {
@@ -7975,6 +7982,7 @@ where
         auth_manager: Arc::clone(&auth_manager),
         session_telemetry: session_telemetry.clone(),
         models_manager: Arc::clone(&models_manager),
+        model_provider_manifest_lineage: false,
         tool_approvals: Mutex::new(ApprovalStore::default()),
         guardian_rejection_circuit_breaker: Mutex::new(Default::default()),
         runtime_handle: tokio::runtime::Handle::current(),
@@ -9721,6 +9729,7 @@ async fn attach_in_memory_thread_store(
             metadata: ThreadPersistenceMetadata {
                 cwd: Some(config.cwd.to_path_buf()),
                 model_provider: config.model_provider_id.clone(),
+                model_provider_manifest_lineage: false,
                 memory_mode: if config.memories.generate_memories {
                     ThreadMemoryMode::Enabled
                 } else {

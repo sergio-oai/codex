@@ -2729,6 +2729,15 @@ impl InitialHistory {
             .and_then(|meta| meta.parent_thread_id)
     }
 
+    /// Whether the persisted source thread belongs to a provider-manifest
+    /// lineage. This survives cold resume/fork when the source runtime and
+    /// its weak provider-scoped catalog entry have already been released.
+    pub fn get_model_provider_manifest_lineage(&self) -> bool {
+        self.get_session_meta()
+            .map(|meta| meta.model_provider_manifest_lineage)
+            .unwrap_or(false)
+    }
+
     fn get_session_meta(&self) -> Option<&SessionMeta> {
         match self {
             InitialHistory::New | InitialHistory::Cleared => None,
@@ -3107,6 +3116,12 @@ pub struct SessionMeta {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub agent_path: Option<String>,
     pub model_provider: Option<String>,
+    /// True when this thread belongs to a provider-manifest lineage whose
+    /// model catalog must remain provider-scoped even after a descendant
+    /// switches to an ordinary provider. Omitted for ordinary sessions so
+    /// pre-manifest rollout files and regular Codex users stay unchanged.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub model_provider_manifest_lineage: bool,
     /// base_instructions for the session. This *should* always be present when creating a new session,
     /// but may be missing for older sessions. If not present, fall back to rendering the base_instructions
     /// from ModelsManager.
@@ -3158,6 +3173,7 @@ impl Default for SessionMeta {
             agent_role: None,
             agent_path: None,
             model_provider: None,
+            model_provider_manifest_lineage: false,
             base_instructions: None,
             dynamic_tools: None,
             selected_capability_roots: Vec::new(),
@@ -5951,6 +5967,50 @@ mod tests {
         let mut unknown = serialized;
         unknown["history_mode"] = json!("future");
         assert!(serde_json::from_value::<SessionMeta>(unknown).is_err());
+        Ok(())
+    }
+
+    #[test]
+    fn provider_manifest_lineage_defaults_false_and_survives_history() -> Result<()> {
+        let thread_id = ThreadId::from_string("00000000-0000-0000-0000-000000000001")?;
+        let legacy_meta: SessionMeta = serde_json::from_value(json!({
+            "session_id": thread_id,
+            "id": thread_id,
+            "timestamp": "2026-01-01T00:00:00Z",
+            "cwd": "/tmp",
+            "originator": "codex",
+            "cli_version": "0.0.0",
+            "model_provider": null,
+            "base_instructions": null
+        }))?;
+        assert!(!legacy_meta.model_provider_manifest_lineage);
+        assert!(
+            serde_json::to_value(&legacy_meta)?
+                .get("model_provider_manifest_lineage")
+                .is_none(),
+            "ordinary sessions should not gain a new serialized field"
+        );
+
+        let manifest_lineage_meta = RolloutItem::SessionMeta(SessionMetaLine {
+            meta: SessionMeta {
+                session_id: thread_id.into(),
+                id: thread_id,
+                model_provider_manifest_lineage: true,
+                ..SessionMeta::default()
+            },
+            git: None,
+        });
+        let resumed = InitialHistory::Resumed(ResumedHistory {
+            conversation_id: thread_id,
+            history: Arc::new(vec![manifest_lineage_meta.clone()]),
+            rollout_path: None,
+        });
+        assert!(resumed.get_model_provider_manifest_lineage());
+        assert!(
+            InitialHistory::Forked(vec![manifest_lineage_meta])
+                .get_model_provider_manifest_lineage()
+        );
+        assert!(!InitialHistory::New.get_model_provider_manifest_lineage());
         Ok(())
     }
 
