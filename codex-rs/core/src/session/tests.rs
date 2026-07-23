@@ -5147,7 +5147,7 @@ async fn provider_manifest_rejects_unadvertised_model_transitions() {
 }
 
 #[tokio::test]
-async fn provider_manifest_rejects_unsupported_reasoning_effort_transitions() {
+async fn provider_manifest_rejects_unsupported_settings_transitions() {
     let (mut session, _turn_context) = make_session_and_context().await;
     let current_model = {
         let state = session.state.lock().await;
@@ -5169,6 +5169,11 @@ async fn provider_manifest_rejects_unsupported_reasoning_effort_transitions() {
         effort: ReasoningEffortConfig::Medium,
         description: "medium".to_string(),
     }];
+    current_model_info.service_tiers = vec![ModelServiceTier {
+        id: "custom-tier".to_string(),
+        name: "tier-custom".to_string(),
+        description: "custom manifest tier".to_string(),
+    }];
     let mut next_model_info = construct_model_info_offline_for_tests(
         "next-manifest-model",
         &config.to_models_manager_config(),
@@ -5178,6 +5183,7 @@ async fn provider_manifest_rejects_unsupported_reasoning_effort_transitions() {
         effort: ReasoningEffortConfig::Low,
         description: "low".to_string(),
     }];
+    next_model_info.service_tiers = Vec::new();
     session.services.models_manager = Arc::new(StaticModelsManager::new(
         /*auth_manager*/ None,
         ModelsResponse {
@@ -5266,10 +5272,57 @@ async fn provider_manifest_rejects_unsupported_reasoning_effort_transitions() {
         next_model_error.to_string().contains("reasoning_effort"),
         "unexpected next-model error: {next_model_error}"
     );
+
+    let original_service_tier = session.thread_config_snapshot().await.service_tier;
+    let supported_tier_updates = SessionSettingsUpdate {
+        service_tier: Some(Some("custom-tier".to_string())),
+        ..Default::default()
+    };
+    assert!(
+        session
+            .preview_settings(&supported_tier_updates)
+            .await
+            .is_ok(),
+        "manifest-supported service tier should preview successfully"
+    );
+    let unsupported_tier_updates = SessionSettingsUpdate {
+        service_tier: Some(Some("fast".to_string())),
+        ..Default::default()
+    };
+    let tier_preview_error = session
+        .preview_settings(&unsupported_tier_updates)
+        .await
+        .expect_err("preview should reject an unsupported manifest service tier");
+    assert!(
+        tier_preview_error.to_string().contains("service_tier"),
+        "unexpected tier preview error: {tier_preview_error}"
+    );
+    assert!(
+        session
+            .update_settings(unsupported_tier_updates.clone())
+            .await
+            .is_err(),
+        "core thread settings should reject an unsupported manifest service tier"
+    );
+    assert!(
+        session
+            .new_turn_with_sub_id(
+                "manifest-tier-transition".to_string(),
+                unsupported_tier_updates,
+            )
+            .await
+            .is_err(),
+        "core turn creation should reject an unsupported manifest service tier"
+    );
     assert_eq!(
         session.thread_config_snapshot().await.reasoning_effort,
         Some(ReasoningEffortConfig::Medium),
         "rejected reasoning transitions must leave the active effort unchanged"
+    );
+    assert_eq!(
+        session.thread_config_snapshot().await.service_tier,
+        original_service_tier,
+        "rejected tier transitions must leave the active tier unchanged"
     );
 }
 
@@ -5313,6 +5366,18 @@ async fn ordinary_providers_keep_existing_model_override_behavior() {
             .await
             .is_ok(),
         "ordinary providers should not gain manifest reasoning validation"
+    );
+
+    let service_tier_updates = SessionSettingsUpdate {
+        service_tier: Some(Some("fast".to_string())),
+        ..Default::default()
+    };
+    assert!(
+        session
+            .preview_settings(&service_tier_updates)
+            .await
+            .is_ok(),
+        "ordinary providers should not gain manifest service-tier validation"
     );
 }
 

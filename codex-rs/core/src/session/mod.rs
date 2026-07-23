@@ -97,6 +97,7 @@ use codex_protocol::config_types::ApprovalsReviewer;
 use codex_protocol::config_types::AutoCompactTokenLimitScope;
 use codex_protocol::config_types::ModeKind;
 use codex_protocol::config_types::SERVICE_TIER_DEFAULT_REQUEST_VALUE;
+use codex_protocol::config_types::ServiceTier;
 use codex_protocol::config_types::Settings;
 use codex_protocol::config_types::WebSearchMode;
 use codex_protocol::dynamic_tools::DynamicToolResponse;
@@ -1528,20 +1529,18 @@ impl Session {
     /// Authoritative provider manifests are exact catalogs, not metadata hints.
     ///
     /// Keep the current model running if a later catalog refresh removes it,
-    /// but reject an explicit model or reasoning-effort transition that the
-    /// already-loaded manifest does not advertise. Ordinary providers return
-    /// before touching the model manager, preserving their existing override
-    /// behavior.
-    pub(crate) async fn validate_provider_manifest_collaboration_mode_transition(
+    /// but reject an explicit model, reasoning-effort, or non-default
+    /// service-tier transition that the already-loaded manifest does not
+    /// advertise. Ordinary providers return before touching the model manager,
+    /// preserving their existing override behavior.
+    pub(crate) async fn validate_provider_manifest_settings_transition(
         &self,
         updates: &SessionSettingsUpdate,
     ) -> ConstraintResult<()> {
-        let Some(collaboration_mode) = updates.collaboration_mode.as_ref() else {
+        if updates.collaboration_mode.is_none() && updates.service_tier.is_none() {
             return Ok(());
-        };
-        let requested_model = collaboration_mode.model().to_string();
-        let requested_reasoning_effort = collaboration_mode.reasoning_effort();
-        let (current_model, current_reasoning_effort, config) = {
+        }
+        let (current_model, current_reasoning_effort, current_service_tier, config) = {
             let state = self.state.lock().await;
             (
                 state
@@ -1553,12 +1552,38 @@ impl Session {
                     .session_configuration
                     .collaboration_mode
                     .reasoning_effort(),
+                state.session_configuration.service_tier.clone(),
                 Arc::clone(&state.session_configuration.original_config_do_not_use),
             )
         };
-        if requested_model == current_model
-            && requested_reasoning_effort == current_reasoning_effort
-        {
+        let (requested_model, requested_reasoning_effort) =
+            updates.collaboration_mode.as_ref().map_or_else(
+                || (current_model.clone(), current_reasoning_effort.clone()),
+                |collaboration_mode| {
+                    (
+                        collaboration_mode.model().to_string(),
+                        collaboration_mode.reasoning_effort(),
+                    )
+                },
+            );
+        let requested_service_tier = updates.service_tier.as_ref().map_or_else(
+            || current_service_tier.clone(),
+            |service_tier| {
+                Some(match service_tier {
+                    Some(service_tier) => ServiceTier::from_request_value(service_tier)
+                        .map_or_else(
+                            || service_tier.clone(),
+                            |service_tier| service_tier.request_value().to_string(),
+                        ),
+                    None => SERVICE_TIER_DEFAULT_REQUEST_VALUE.to_string(),
+                })
+            },
+        );
+        let model_or_reasoning_changed = requested_model != current_model
+            || requested_reasoning_effort != current_reasoning_effort;
+        let needs_service_tier_validation = updates.service_tier.is_some()
+            && requested_service_tier.as_deref() != Some(SERVICE_TIER_DEFAULT_REQUEST_VALUE);
+        if !model_or_reasoning_changed && !needs_service_tier_validation {
             return Ok(());
         }
         let Some(provider_manifest_path) = config.model_provider.provider_manifest_path.as_deref()
@@ -1619,6 +1644,33 @@ impl Session {
                 requirement_source: codex_config::RequirementSource::Unknown,
             });
         }
+        if let Some(service_tier) = requested_service_tier.as_deref()
+            && service_tier != SERVICE_TIER_DEFAULT_REQUEST_VALUE
+            && !available_model
+                .service_tiers
+                .iter()
+                .any(|tier| tier.id == service_tier)
+        {
+            let supported_service_tiers = available_model
+                .service_tiers
+                .iter()
+                .map(|tier| tier.id.as_str())
+                .collect::<Vec<_>>()
+                .join(", ");
+            let supported_service_tiers = if supported_service_tiers.is_empty() {
+                "none".to_string()
+            } else {
+                supported_service_tiers
+            };
+            return Err(ConstraintError::InvalidValue {
+                field_name: "service_tier",
+                candidate: service_tier.to_string(),
+                allowed: format!(
+                    "advertised for model {requested_model} by provider manifest {provider_manifest_path} (supported service tiers: {supported_service_tiers})"
+                ),
+                requirement_source: codex_config::RequirementSource::Unknown,
+            });
+        }
         Ok(())
     }
 
@@ -1626,7 +1678,7 @@ impl Session {
         &self,
         updates: SessionSettingsUpdate,
     ) -> ConstraintResult<()> {
-        self.validate_provider_manifest_collaboration_mode_transition(&updates)
+        self.validate_provider_manifest_settings_transition(&updates)
             .await?;
         let notify_config_contributors = !self.services.extensions.config_contributors().is_empty();
         let (previous_config, new_config, permission_profile_changed) = {
@@ -1668,7 +1720,7 @@ impl Session {
         &self,
         updates: &SessionSettingsUpdate,
     ) -> ConstraintResult<ThreadConfigSnapshot> {
-        self.validate_provider_manifest_collaboration_mode_transition(updates)
+        self.validate_provider_manifest_settings_transition(updates)
             .await?;
         let state = self.state.lock().await;
         state

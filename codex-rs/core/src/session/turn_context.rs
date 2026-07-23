@@ -599,7 +599,7 @@ impl Session {
         updates: SessionSettingsUpdate,
     ) -> CodexResult<Arc<TurnContext>> {
         if let Err(err) = self
-            .validate_provider_manifest_collaboration_mode_transition(&updates)
+            .validate_provider_manifest_settings_transition(&updates)
             .await
         {
             let message = err.to_string();
