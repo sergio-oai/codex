@@ -596,19 +596,16 @@ impl Session {
             // parent and child already share one.
             codex_models_manager::manager::RefreshStrategy::OnlineIfUncached
         };
-        let available_models = if config.model.is_none()
+        if config.model.is_none()
             || !matches!(
                 refresh_strategy,
                 codex_models_manager::manager::RefreshStrategy::Offline
-            ) {
-            Some(
-                models_manager
-                    .list_models(refresh_strategy, config.http_client_factory())
-                    .await,
             )
-        } else {
-            None
-        };
+        {
+            let _ = models_manager
+                .list_models(refresh_strategy, config.http_client_factory())
+                .await;
+        }
         let model = models_manager
             .get_default_model(
                 &config.model,
@@ -618,7 +615,16 @@ impl Session {
             )
             .await;
         if let Some(path) = config.model_provider.provider_manifest_path.as_deref() {
-            let manifest_models = available_models.as_deref().unwrap_or_default();
+            // `get_default_model()` can make a second OnlineIfUncached attempt
+            // after the eager listing above. Read the manager's current
+            // in-memory snapshot so a transient first failure does not make a
+            // successful retry look like an empty authoritative catalog.
+            let manifest_models = models_manager
+                .list_models(
+                    codex_models_manager::manager::RefreshStrategy::Offline,
+                    config.http_client_factory(),
+                )
+                .await;
             if model.is_empty() || manifest_models.is_empty() {
                 return Err(CodexErr::Fatal(format!(
                     "provider manifest {path} did not yield an available model; verify the manifest endpoint and try again"

@@ -21,11 +21,7 @@ pub async fn supported_models(
     let presets = match thread_id {
         Some(thread_id) => {
             thread_manager
-                .list_models_for_thread(
-                    thread_id,
-                    RefreshStrategy::OnlineIfUncached,
-                    http_client_factory,
-                )
+                .list_models_for_thread(thread_id, RefreshStrategy::OnlineIfUncached)
                 .await?
         }
         None => {

@@ -384,7 +384,7 @@ async fn ignores_session_prefix_messages_when_truncating() {
 }
 
 #[tokio::test]
-async fn model_managers_are_scoped_to_the_effective_thread_provider() {
+async fn provider_manifest_model_managers_are_scoped_without_changing_regular_reuse() {
     let temp_dir = tempdir().expect("tempdir");
     let mut config = test_config().await;
     config.codex_home = temp_dir.path().join("codex-home").abs();
@@ -428,37 +428,18 @@ async fn model_managers_are_scoped_to_the_effective_thread_provider() {
         .models_manager_for_config(&config, Arc::clone(&other_auth_manager))
         .await;
     assert!(
-        !Arc::ptr_eq(&startup_manager, &other_auth_models_manager),
-        "a manager must not be reused across distinct auth managers"
+        Arc::ptr_eq(&startup_manager, &other_auth_models_manager),
+        "non-manifest configs must preserve the pre-feature process-wide manager"
     );
 
-    let same_other_auth_models_manager = manager
+    let other_auth_manifest_manager = manager
         .state
-        .models_manager_for_config(&config, other_auth_manager)
+        .models_manager_for_config(&manifest_config, Arc::clone(&other_auth_manager))
         .await;
-    assert!(Arc::ptr_eq(
-        &other_auth_models_manager,
-        &same_other_auth_models_manager
-    ));
-
-    let mut cache_only_model = codex_models_manager::bundled_models_response()
-        .expect("bundled models")
-        .models
-        .into_iter()
-        .next()
-        .expect("at least one bundled model");
-    cache_only_model.slug = "cache-only-model".to_string();
-    cache_only_model.display_name = "Cache only model".to_string();
-    std::fs::write(
-        config.codex_home.join("models_cache.json"),
-        serde_json::to_vec(&serde_json::json!({
-            "fetched_at": chrono::Utc::now(),
-            "client_version": codex_models_manager::client_version_to_whole(),
-            "models": [cache_only_model],
-        }))
-        .expect("serialize cache"),
-    )
-    .expect("write cache");
+    assert!(
+        !Arc::ptr_eq(&manifest_manager, &other_auth_manifest_manager),
+        "manifest managers must remain scoped to provider auth"
+    );
 
     let mut non_manifest_config = config.clone();
     non_manifest_config.model_provider_id = "custom".to_string();
@@ -468,17 +449,9 @@ async fn model_managers_are_scoped_to_the_effective_thread_provider() {
         .state
         .models_manager_for_config(&non_manifest_config, manager.auth_manager())
         .await;
-    let available_models = non_manifest_manager
-        .list_models(
-            RefreshStrategy::Offline,
-            crate::test_support::default_http_client_factory(),
-        )
-        .await;
     assert!(
-        available_models
-            .iter()
-            .all(|model| model.model != "cache-only-model"),
-        "a dynamically selected provider must not load the startup provider's disk cache"
+        Arc::ptr_eq(&startup_manager, &non_manifest_manager),
+        "non-manifest provider overrides must keep the pre-feature startup manager"
     );
 }
 

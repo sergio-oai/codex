@@ -290,9 +290,10 @@ pub(crate) struct ThreadManagerState {
     ops_log: Option<SharedCapturedOps>,
 }
 
-/// A model catalog belongs to the effective provider configuration that
-/// fetched it. App-server threads can select providers independently, so a
-/// process-wide manager is only safe for an exact provider/catalog match.
+/// An opt-in provider-manifest catalog belongs to the effective provider
+/// configuration that fetched it. Ordinary providers intentionally keep the
+/// historical process-wide manager behavior; this registry scopes only the
+/// new manifest-backed managers.
 struct ModelsManagerEntry {
     model_provider: ModelProviderInfo,
     model_catalog: Option<ModelsResponse>,
@@ -655,7 +656,6 @@ impl ThreadManager {
         &self,
         thread_id: ThreadId,
         refresh_strategy: RefreshStrategy,
-        http_client_factory: codex_http_client::HttpClientFactory,
     ) -> CodexResult<Vec<ModelPreset>> {
         let thread = self.get_thread(thread_id).await?;
         let config = thread.config().await;
@@ -667,7 +667,7 @@ impl ThreadManager {
             )
             .await;
         Ok(models_manager
-            .list_models(refresh_strategy, http_client_factory)
+            .list_models(refresh_strategy, config.http_client_factory())
             .await)
     }
 
@@ -1198,6 +1198,14 @@ impl ThreadManagerState {
         config: &Config,
         auth_manager: Arc<AuthManager>,
     ) -> SharedModelsManager {
+        // Provider-scoped catalogs are an opt-in extension. Preserve the
+        // process-wide manager behavior for every pre-existing configuration
+        // so ordinary provider switches keep their historical cache and auth
+        // semantics when no manifest path is configured.
+        if config.model_provider.provider_manifest_path.is_none() {
+            return Arc::clone(&self.models_manager);
+        }
+
         if let Some(manager) = self
             .models_manager_registry
             .read()
@@ -1213,10 +1221,11 @@ impl ThreadManagerState {
         // but keeping the critical section small avoids serializing unrelated
         // thread starts if that ever changes.
         //
-        // Dynamically selected providers must not read or overwrite the
+        // Manifest-backed providers must not read or overwrite the
         // process-wide models_cache.json. That cache predates per-thread
-        // provider selection and is not provider-scoped, so a secondary
-        // manager could otherwise adopt the startup provider's catalog.
+        // provider selection and is not provider-scoped, so an authoritative
+        // manifest manager could otherwise adopt the startup provider's
+        // catalog.
         let provider = create_model_provider(
             config.model_provider.clone(),
             Some(Arc::clone(&auth_manager)),

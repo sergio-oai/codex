@@ -170,7 +170,9 @@ fn to_model_info(
             manifest_model.id
         ));
     }
-    // Codex uses this value to decide when to compact. Use the most
+    // Codex uses this value to decide when to compact. Every authoritative
+    // manifest model must advertise at least one usable input limit; otherwise
+    // the client cannot size or compact requests safely. Use the most
     // conservative known limit so the client compacts before it can send a
     // prompt that the provider rejects.
     let resolved_context_window = match (context_window, max_input_tokens) {
@@ -179,7 +181,12 @@ fn to_model_info(
         }
         (Some(context_window), None) => Some(context_window),
         (None, Some(max_input_tokens)) => Some(max_input_tokens),
-        (None, None) => None,
+        (None, None) => {
+            return Err(format!(
+                "provider manifest model {} must specify context_window or max_input_tokens",
+                manifest_model.id
+            ));
+        }
     };
     let priority = i32::try_from(priority)
         .map_err(|_| "provider manifest contains too many models".to_string())?;
@@ -243,12 +250,14 @@ fn to_model_info(
 }
 
 /// Builds a provider-neutral model descriptor from an explicit allowlist of
-/// local-only metadata.
+/// trusted local-only metadata.
 ///
 /// A manifest may reuse the slug of a bundled OpenAI model, but that must not
 /// opt a custom provider into bundled wire-format capabilities such as
-/// Responses Lite. Local prompt text remains a Codex-owned decision, so known
-/// bundled prompts are safe to preserve.
+/// Responses Lite. For exact bundled-slug matches, preserve Codex-owned prompt,
+/// local tool-presentation, and output-truncation behavior that the model was
+/// trained to use; request headers, hosted tools, and backend payload
+/// capabilities stay conservative.
 fn safe_provider_manifest_model_info(slug: &str, bundled_model: Option<&ModelInfo>) -> ModelInfo {
     ModelInfo {
         slug: slug.to_string(),
@@ -256,7 +265,7 @@ fn safe_provider_manifest_model_info(slug: &str, bundled_model: Option<&ModelInf
         description: None,
         default_reasoning_level: None,
         supported_reasoning_levels: Vec::new(),
-        shell_type: ConfigShellToolType::Default,
+        shell_type: bundled_model.map_or(ConfigShellToolType::Default, |model| model.shell_type),
         visibility: ModelVisibility::None,
         supported_in_api: true,
         priority: 99,
@@ -270,28 +279,33 @@ fn safe_provider_manifest_model_info(slug: &str, bundled_model: Option<&ModelInf
             |model| model.base_instructions.clone(),
         ),
         model_messages: bundled_model.and_then(|model| model.model_messages.clone()),
-        include_skills_usage_instructions: false,
+        include_skills_usage_instructions: bundled_model
+            .is_some_and(|model| model.include_skills_usage_instructions),
         supports_reasoning_summary_parameter: true,
         default_reasoning_summary: ReasoningSummary::Auto,
         support_verbosity: false,
         default_verbosity: None,
-        apply_patch_tool_type: None,
+        apply_patch_tool_type: bundled_model.and_then(|model| model.apply_patch_tool_type.clone()),
         web_search_tool_type: WebSearchToolType::Text,
-        truncation_policy: TruncationPolicyConfig::bytes(/*limit*/ 10_000),
+        truncation_policy: bundled_model
+            .map_or(TruncationPolicyConfig::bytes(/*limit*/ 10_000), |model| {
+                model.truncation_policy
+            }),
         supports_parallel_tool_calls: false,
         supports_image_detail_original: false,
         context_window: None,
         max_context_window: None,
         auto_compact_token_limit: None,
         comp_hash: None,
-        effective_context_window_percent: 95,
+        effective_context_window_percent: bundled_model
+            .map_or(95, |model| model.effective_context_window_percent),
         experimental_supported_tools: Vec::new(),
         input_modalities: vec![InputModality::Text],
         used_fallback_model_metadata: false,
         supports_search_tool: false,
         use_responses_lite: false,
         auto_review_model_override: None,
-        tool_mode: None,
+        tool_mode: bundled_model.and_then(|model| model.tool_mode),
         multi_agent_version: None,
     }
 }

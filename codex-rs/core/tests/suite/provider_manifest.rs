@@ -16,6 +16,9 @@ use core_test_support::skip_if_no_network;
 use core_test_support::test_codex::test_codex;
 use pretty_assertions::assert_eq;
 use serde_json::json;
+use std::sync::Arc;
+use std::sync::atomic::AtomicUsize;
+use std::sync::atomic::Ordering;
 use std::time::Duration;
 use tokio::time::Instant;
 use tokio::time::sleep;
@@ -141,6 +144,7 @@ async fn provider_manifest_rejects_unadvertised_configured_model_impl() -> Resul
             "models": [{
                 "id": "venado-only",
                 "display_name": "Venado only",
+                "max_input_tokens": 24_000,
                 "service_tiers": []
             }]
         })))
@@ -234,6 +238,58 @@ async fn provider_manifest_outage_fails_startup_with_or_without_configured_model
         "startup should try the configured provider manifest before failing"
     );
 
+    server.verify().await;
+    Ok(())
+}
+
+#[test]
+fn provider_manifest_startup_uses_successful_retry_catalog() -> Result<()> {
+    run_provider_manifest_test(
+        "provider_manifest_startup_uses_successful_retry_catalog",
+        || {
+            let runtime = tokio::runtime::Builder::new_current_thread()
+                .enable_all()
+                .build()?;
+            runtime.block_on(provider_manifest_startup_uses_successful_retry_catalog_impl())
+        },
+    )
+}
+
+async fn provider_manifest_startup_uses_successful_retry_catalog_impl() -> Result<()> {
+    skip_if_no_network!(Ok(()));
+
+    let server = MockServer::start().await;
+    let request_count = Arc::new(AtomicUsize::new(0));
+    let response_count = Arc::clone(&request_count);
+    Mock::given(method("GET"))
+        .and(path("/v1/codex/provider-manifest"))
+        .respond_with(move |_request: &wiremock::Request| {
+            if response_count.fetch_add(1, Ordering::SeqCst) == 0 {
+                ResponseTemplate::new(500)
+            } else {
+                ResponseTemplate::new(200).set_body_json(json!({
+                    "schema_version": 1,
+                    "models": [{
+                        "id": "venado-only",
+                        "display_name": "Venado only",
+                        "max_input_tokens": 24_000,
+                        "service_tiers": []
+                    }]
+                }))
+            }
+        })
+        .expect(2)
+        .mount(&server)
+        .await;
+
+    let mut builder = test_codex().with_config(|config| {
+        config.model = None;
+        config.model_provider.provider_manifest_path = Some("codex/provider-manifest".to_string());
+    });
+    let test = builder.build(&server).await?;
+
+    assert_eq!(test.session_configured.model, "venado-only");
+    assert_eq!(request_count.load(Ordering::SeqCst), 2);
     server.verify().await;
     Ok(())
 }
