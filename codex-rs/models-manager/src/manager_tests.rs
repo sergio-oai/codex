@@ -408,7 +408,7 @@ async fn static_manager_preserves_unsupported_requested_model_when_fallback_is_d
 }
 
 #[tokio::test]
-async fn static_manager_preserves_requested_model_when_catalog_is_empty() {
+async fn static_manager_uses_empty_default_when_fallback_is_allowed_and_catalog_is_empty() {
     let manager = static_manager_for_tests(ModelsResponse { models: Vec::new() });
     let requested_model = Some("unsupported".to_string());
 
@@ -421,7 +421,7 @@ async fn static_manager_preserves_requested_model_when_catalog_is_empty() {
         )
         .await;
 
-    assert_eq!(model, "unsupported");
+    assert_eq!(model, "");
 }
 
 #[tokio::test]

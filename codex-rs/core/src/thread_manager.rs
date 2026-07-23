@@ -1186,7 +1186,16 @@ impl ThreadManagerState {
         // Build outside the write lock: provider construction is local today,
         // but keeping the critical section small avoids serializing unrelated
         // thread starts if that ever changes.
-        let manager = build_models_manager(config, Arc::clone(&auth_manager));
+        //
+        // Dynamically selected providers must not read or overwrite the
+        // process-wide models_cache.json. That cache predates per-thread
+        // provider selection and is not provider-scoped, so a secondary
+        // manager could otherwise adopt the startup provider's catalog.
+        let provider = create_model_provider(
+            config.model_provider.clone(),
+            Some(Arc::clone(&auth_manager)),
+        );
+        let manager = provider.models_manager_without_cache(config.model_catalog.clone());
         let mut registry = self.models_manager_registry.write().await;
         if let Some(existing) = registry
             .iter()

@@ -598,11 +598,20 @@ impl ModelsManager for StaticModelsManager {
                 let available_models = self
                     .list_models(refresh_strategy, http_client_factory)
                     .await;
-                model_from_authoritative_catalog(
-                    model,
-                    allow_provider_model_fallback,
-                    available_models,
-                )
+                let requested_model = model.as_deref();
+
+                if allow_provider_model_fallback {
+                    if requested_model_is_available(requested_model, &available_models)
+                        && let Some(requested_model) = requested_model
+                    {
+                        return requested_model.to_string();
+                    }
+                    return default_model_from_available(available_models);
+                }
+
+                model
+                    .clone()
+                    .unwrap_or_else(|| default_model_from_available(available_models))
             }
             .instrument(tracing::info_span!(
                 "get_default_model",

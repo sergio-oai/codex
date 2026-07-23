@@ -12,9 +12,27 @@ use codex_protocol::openai_models::ReasoningEffortPreset;
 use codex_protocol::openai_models::TruncationPolicyConfig;
 use codex_protocol::openai_models::WebSearchToolType;
 use codex_protocol::openai_models::default_input_modalities;
+use codex_protocol::protocol::MultiAgentVersion;
 use serde::Deserialize;
 
 const SUPPORTED_SCHEMA_VERSION: u32 = 1;
+// Provider manifests are fetched from an opt-in remote endpoint. Keep both
+// parsing work and any catalog data that can later reach model-visible tool
+// descriptions bounded independently of the HTTP client's response limits.
+const MAX_PROVIDER_MANIFEST_BYTES: usize = 256 * 1024;
+const MAX_PROVIDER_MANIFEST_MODELS: usize = 128;
+// spawn_agent exposes at most five picker-visible models. Keep the aggregate
+// manifest-controlled part of that tool description comfortably below one
+// thousand tokens even when every exposed model uses every allowed option.
+const MAX_MODEL_ID_BYTES: usize = 64;
+const MAX_MODEL_DISPLAY_NAME_BYTES: usize = 128;
+const MAX_MODEL_DESCRIPTION_BYTES: usize = 512;
+const MAX_REASONING_EFFORTS_PER_MODEL: usize = 8;
+const MAX_REASONING_EFFORT_ID_BYTES: usize = 32;
+const MAX_SERVICE_TIERS_PER_MODEL: usize = 4;
+const MAX_SERVICE_TIER_ID_BYTES: usize = 32;
+const MAX_SERVICE_TIER_NAME_BYTES: usize = 128;
+const MAX_SERVICE_TIER_DESCRIPTION_BYTES: usize = 256;
 // Keep manifest-provided token limits in the range that downstream code can
 // safely multiply while deriving compaction thresholds.
 const MAX_SAFE_MODEL_TOKEN_LIMIT: i64 = i64::MAX / 9;
@@ -48,6 +66,13 @@ struct ProviderManifestModel {
     supports_personality: bool,
     #[serde(default)]
     service_tiers: Vec<ProviderManifestServiceTier>,
+    /// Local multi-agent compatibility, not a provider wire-format feature.
+    ///
+    /// Omitted values can still inherit this one safe capability from a
+    /// bundled model with the same slug. Custom providers otherwise opt in
+    /// explicitly without inheriting OpenAI-only request-shape metadata.
+    #[serde(default)]
+    multi_agent_version: Option<MultiAgentVersion>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -58,6 +83,11 @@ struct ProviderManifestServiceTier {
 }
 
 pub(crate) fn parse_provider_manifest(body: &[u8]) -> Result<Vec<ModelInfo>, String> {
+    if body.len() > MAX_PROVIDER_MANIFEST_BYTES {
+        return Err(format!(
+            "provider manifest exceeds maximum size of {MAX_PROVIDER_MANIFEST_BYTES} bytes"
+        ));
+    }
     let manifest: ProviderManifest = serde_json::from_slice(body)
         .map_err(|err| format!("failed to decode provider manifest: {err}"))?;
     if manifest.schema_version != SUPPORTED_SCHEMA_VERSION {
@@ -68,6 +98,11 @@ pub(crate) fn parse_provider_manifest(body: &[u8]) -> Result<Vec<ModelInfo>, Str
     }
     if manifest.models.is_empty() {
         return Err("provider manifest must contain at least one model".to_string());
+    }
+    if manifest.models.len() > MAX_PROVIDER_MANIFEST_MODELS {
+        return Err(format!(
+            "provider manifest must contain no more than {MAX_PROVIDER_MANIFEST_MODELS} models"
+        ));
     }
 
     let bundled_models = bundled_models_response()
@@ -90,15 +125,25 @@ fn to_model_info(
     bundled_models: &[ModelInfo],
     seen_ids: &mut HashSet<String>,
 ) -> Result<ModelInfo, String> {
-    if manifest_model.id.is_empty() || manifest_model.id.trim() != manifest_model.id {
-        return Err("provider manifest model id must be non-empty and trimmed".to_string());
-    }
+    validate_model_visible_token("model id", &manifest_model.id, MAX_MODEL_ID_BYTES)?;
+    validate_bounded_single_line_text(
+        "model display_name",
+        &manifest_model.display_name,
+        MAX_MODEL_DISPLAY_NAME_BYTES,
+    )?;
+    validate_bounded_single_line_text(
+        "model description",
+        &manifest_model.description,
+        MAX_MODEL_DESCRIPTION_BYTES,
+    )?;
     if !seen_ids.insert(manifest_model.id.clone()) {
         return Err(format!(
             "provider manifest contains duplicate model id {}",
             manifest_model.id
         ));
     }
+    validate_reasoning_efforts(&manifest_model)?;
+    validate_service_tiers(&manifest_model)?;
 
     let context_window = positive_limit("context_window", manifest_model.context_window)?;
     let max_input_tokens = positive_limit("max_input_tokens", manifest_model.max_input_tokens)?;
@@ -136,8 +181,13 @@ fn to_model_info(
     } else {
         manifest_model.display_name
     };
-    model.description =
-        (!manifest_model.description.is_empty()).then_some(manifest_model.description);
+    // ModelPreset descriptions are interpolated verbatim into the
+    // model-visible spawn_agent tool instructions. Provider-controlled prose
+    // therefore must not become ModelInfo.description, even when it is short
+    // and single-line; semantic prompt injection cannot be made safe by
+    // escaping punctuation. Keep the provider description schema-compatible
+    // and bounded above, but omit it from the model-visible catalog.
+    model.description = None;
     model.default_reasoning_level = manifest_model.default_reasoning_effort;
     model.supported_reasoning_levels = manifest_model
         .supported_reasoning_efforts
@@ -168,6 +218,13 @@ fn to_model_info(
     if !manifest_model.supports_personality {
         model.model_messages = None;
     }
+    // Multi-agent version is a local tool-compatibility marker, unlike
+    // Responses Lite or other provider-specific wire capabilities. Preserve
+    // it from trusted bundled metadata for known slugs, while allowing a
+    // custom manifest model to opt in explicitly.
+    model.multi_agent_version = manifest_model
+        .multi_agent_version
+        .or_else(|| bundled_model.and_then(|bundled_model| bundled_model.multi_agent_version));
     Ok(model)
 }
 
@@ -237,6 +294,125 @@ fn positive_limit(name: &str, value: Option<i64>) -> Result<Option<i64>, String>
     Ok(value)
 }
 
+fn validate_reasoning_efforts(manifest_model: &ProviderManifestModel) -> Result<(), String> {
+    if manifest_model.supported_reasoning_efforts.len() > MAX_REASONING_EFFORTS_PER_MODEL {
+        return Err(format!(
+            "provider manifest model {} must contain no more than {MAX_REASONING_EFFORTS_PER_MODEL} supported reasoning efforts",
+            manifest_model.id
+        ));
+    }
+
+    let mut seen_efforts = HashSet::new();
+    for effort in manifest_model
+        .default_reasoning_effort
+        .iter()
+        .chain(manifest_model.supported_reasoning_efforts.iter())
+    {
+        validate_model_visible_token(
+            "reasoning effort id",
+            effort.as_str(),
+            MAX_REASONING_EFFORT_ID_BYTES,
+        )?;
+    }
+    for effort in &manifest_model.supported_reasoning_efforts {
+        if !seen_efforts.insert(effort.as_str()) {
+            return Err(format!(
+                "provider manifest model {} contains duplicate supported reasoning effort {}",
+                manifest_model.id, effort
+            ));
+        }
+    }
+    Ok(())
+}
+
+fn validate_service_tiers(manifest_model: &ProviderManifestModel) -> Result<(), String> {
+    if manifest_model.service_tiers.len() > MAX_SERVICE_TIERS_PER_MODEL {
+        return Err(format!(
+            "provider manifest model {} must contain no more than {MAX_SERVICE_TIERS_PER_MODEL} service tiers",
+            manifest_model.id
+        ));
+    }
+
+    let mut seen_ids = HashSet::new();
+    for service_tier in &manifest_model.service_tiers {
+        validate_model_visible_token(
+            "service tier id",
+            &service_tier.id,
+            MAX_SERVICE_TIER_ID_BYTES,
+        )?;
+        validate_bounded_single_line_text(
+            "service tier name",
+            &service_tier.name,
+            MAX_SERVICE_TIER_NAME_BYTES,
+        )?;
+        if service_tier.name.is_empty() {
+            return Err("provider manifest service tier name must be non-empty".to_string());
+        }
+        validate_bounded_single_line_text(
+            "service tier description",
+            &service_tier.description,
+            MAX_SERVICE_TIER_DESCRIPTION_BYTES,
+        )?;
+        if !seen_ids.insert(service_tier.id.as_str()) {
+            return Err(format!(
+                "provider manifest model {} contains duplicate service tier id {}",
+                manifest_model.id, service_tier.id
+            ));
+        }
+    }
+    Ok(())
+}
+
+/// Identifiers are interpolated into model-visible model and service-tier
+/// summaries. Restrict them to short ASCII tokens so a manifest cannot add
+/// quoting, Markdown, newlines, or natural-language instructions there.
+fn validate_model_visible_token(name: &str, value: &str, max_bytes: usize) -> Result<(), String> {
+    if value.is_empty() || value.trim() != value {
+        return Err(format!(
+            "provider manifest {name} must be non-empty and trimmed"
+        ));
+    }
+    if value.len() > max_bytes {
+        return Err(format!(
+            "provider manifest {name} must be no more than {max_bytes} bytes"
+        ));
+    }
+    if !value.bytes().all(|byte| {
+        byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_' | b'.' | b':' | b'/')
+    }) {
+        return Err(format!(
+            "provider manifest {name} must contain only ASCII letters, digits, '-', '_', '.', ':', or '/'"
+        ));
+    }
+    Ok(())
+}
+
+/// Bounds UI-only prose and rejects line/control separators. Provider prose is
+/// intentionally not copied into model-visible ModelInfo descriptions.
+fn validate_bounded_single_line_text(
+    name: &str,
+    value: &str,
+    max_bytes: usize,
+) -> Result<(), String> {
+    if value.len() > max_bytes {
+        return Err(format!(
+            "provider manifest {name} must be no more than {max_bytes} bytes"
+        ));
+    }
+    if value.trim() != value {
+        return Err(format!("provider manifest {name} must be trimmed"));
+    }
+    if value
+        .chars()
+        .any(|character| character.is_control() || matches!(character, '\u{2028}' | '\u{2029}'))
+    {
+        return Err(format!(
+            "provider manifest {name} must be single-line text without control characters"
+        ));
+    }
+    Ok(())
+}
+
 fn reasoning_preset(model: &ModelInfo, effort: ReasoningEffort) -> ReasoningEffortPreset {
     model
         .supported_reasoning_levels
@@ -250,13 +426,6 @@ fn reasoning_preset(model: &ModelInfo, effort: ReasoningEffort) -> ReasoningEffo
 }
 
 fn to_service_tier(service_tier: ProviderManifestServiceTier) -> Result<ModelServiceTier, String> {
-    if service_tier.id.is_empty()
-        || service_tier.id.trim() != service_tier.id
-        || service_tier.name.is_empty()
-        || service_tier.name.trim() != service_tier.name
-    {
-        return Err("provider manifest service tiers require non-empty id and name".to_string());
-    }
     Ok(ModelServiceTier {
         id: service_tier.id,
         name: service_tier.name,

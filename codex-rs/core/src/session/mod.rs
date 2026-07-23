@@ -585,9 +585,15 @@ impl Session {
         };
 
         let config = Arc::new(config);
-        let refresh_strategy = if session_source.is_non_root_agent() {
+        let refresh_strategy = if session_source.is_non_root_agent()
+            && config.model_provider.provider_manifest_path.is_none()
+        {
             codex_models_manager::manager::RefreshStrategy::Offline
         } else {
+            // A child role can select a provider whose authoritative manifest
+            // has not been loaded by the parent. OnlineIfUncached fetches that
+            // first catalog, while reusing a fresh in-memory manifest when the
+            // parent and child already share one.
             codex_models_manager::manager::RefreshStrategy::OnlineIfUncached
         };
         if config.model.is_none()
@@ -608,14 +614,12 @@ impl Session {
                 config.http_client_factory(),
             )
             .await;
-        if model.is_empty() {
-            let message = match config.model_provider.provider_manifest_path.as_deref() {
-                Some(path) => format!(
-                    "provider manifest {path} did not yield an available model; verify the manifest endpoint and try again"
-                ),
-                None => "no available model could be selected for this provider".to_string(),
-            };
-            return Err(CodexErr::Fatal(message));
+        if model.is_empty()
+            && let Some(path) = config.model_provider.provider_manifest_path.as_deref()
+        {
+            return Err(CodexErr::Fatal(format!(
+                "provider manifest {path} did not yield an available model; verify the manifest endpoint and try again"
+            )));
         }
         if allow_provider_model_fallback
             && let Some(requested_model) = config.model.as_ref()
