@@ -224,6 +224,10 @@ pub(crate) struct AppServerStartedThread {
     pub(crate) session: ThreadSessionState,
     pub(crate) turns: Vec<Turn>,
     pub(crate) blocks_direct_input: bool,
+    /// Optional compatibility hint from the app server. New servers report
+    /// the loaded thread's effective provider kind; older servers leave this
+    /// unset so TUI can preserve its pre-hint local-config fallback.
+    pub(crate) model_provider_uses_manifest: Option<bool>,
 }
 
 pub(crate) fn source_agent_path(source: &SessionSource) -> Option<String> {
@@ -1693,6 +1697,7 @@ async fn started_thread_from_start_response(
         session,
         turns: response.thread.turns,
         blocks_direct_input,
+        model_provider_uses_manifest: response.model_provider_uses_manifest,
     })
 }
 
@@ -1710,6 +1715,7 @@ async fn started_thread_from_resume_response(
         session,
         turns: response.thread.turns,
         blocks_direct_input,
+        model_provider_uses_manifest: response.model_provider_uses_manifest,
     })
 }
 
@@ -1727,6 +1733,7 @@ async fn started_thread_from_fork_response(
         session,
         turns: response.thread.turns,
         blocks_direct_input,
+        model_provider_uses_manifest: response.model_provider_uses_manifest,
     })
 }
 
@@ -2845,6 +2852,7 @@ provider_manifest_path = "codex/provider-manifest"
             },
             model: "gpt-5.4".to_string(),
             model_provider: "openai".to_string(),
+            model_provider_uses_manifest: Some(true),
             service_tier: None,
             cwd: test_path_buf("/tmp/project").abs(),
             runtime_workspace_roots: vec![
@@ -2888,6 +2896,7 @@ provider_manifest_path = "codex/provider-manifest"
         assert_eq!(started.turns.len(), 1);
         assert_eq!(started.turns[0], response.thread.turns[0]);
         assert!(!started.blocks_direct_input);
+        assert_eq!(started.model_provider_uses_manifest, Some(true));
 
         let embedded_config = ConfigBuilder::default()
             .codex_home(temp_dir.path().join("embedded-codex-home"))

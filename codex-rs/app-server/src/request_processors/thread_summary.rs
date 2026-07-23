@@ -257,9 +257,15 @@ async fn read_updated_at(path: &Path, created_at: Option<&str>) -> Option<String
     updated_at.or_else(|| created_at.map(str::to_string))
 }
 
-pub(super) fn thread_started_notification(mut thread: Thread) -> ThreadStartedNotification {
+pub(super) fn thread_started_notification(
+    mut thread: Thread,
+    model_provider_uses_manifest: bool,
+) -> ThreadStartedNotification {
     thread.turns.clear();
-    ThreadStartedNotification { thread }
+    ThreadStartedNotification {
+        thread,
+        model_provider_uses_manifest: Some(model_provider_uses_manifest),
+    }
 }
 
 #[cfg(test)]

@@ -1342,7 +1342,13 @@ impl TurnRequestProcessor {
                     .await,
                 /*has_in_progress_turn*/ false,
             );
-            let notif = thread_started_notification(thread);
+            let notif = thread_started_notification(
+                thread,
+                review_thread
+                    .config_snapshot()
+                    .await
+                    .model_provider_uses_manifest,
+            );
             self.outgoing
                 .send_server_notification(ServerNotification::ThreadStarted(notif))
                 .await;

@@ -326,6 +326,10 @@ provider_manifest_path = "codex/provider-manifest"
     assert_eq!(items.len(), 1);
     assert_eq!(items[0].id, "venado-only");
     assert_eq!(items[0].model, "venado-only");
+    assert_eq!(
+        items[0].description,
+        "Only advertised by the configured provider manifest"
+    );
     assert!(items[0].service_tiers.is_empty());
     assert!(items[0].additional_speed_tiers.is_empty());
     assert!(next_cursor.is_none());

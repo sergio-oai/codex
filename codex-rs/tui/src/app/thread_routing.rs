@@ -926,10 +926,19 @@ impl App {
         let inferred_session = self
             .infer_session_for_thread_notification(thread_id, &notification)
             .await;
+        let reported_uses_manifest = match &notification {
+            ServerNotification::ThreadStarted(notification) => {
+                notification.model_provider_uses_manifest
+            }
+            _ => None,
+        };
         let is_turn_started = matches!(notification, ServerNotification::TurnStarted(_));
         let notification_status_change = SideParentStatusChange::for_notification(&notification);
         let (sender, store) = {
             let channel = self.ensure_thread_channel(thread_id);
+            if let Some(reported_uses_manifest) = reported_uses_manifest {
+                channel.model_provider_uses_manifest = Some(reported_uses_manifest);
+            }
             (channel.sender.clone(), Arc::clone(&channel.store))
         };
         let (notification, pending_status, turn_stopped) = {
@@ -1325,9 +1334,16 @@ impl App {
         if started.blocks_direct_input {
             self.agent_navigation.mark_parent_owned(thread_id);
         }
-        let AppServerStartedThread { session, turns, .. } = started;
-        if let Some(channel) = self.thread_event_channels.get(&thread_id) {
-            let mut store = channel.store.lock().await;
+        let AppServerStartedThread {
+            session,
+            turns,
+            model_provider_uses_manifest,
+            ..
+        } = started;
+        if let Some(channel) = self.thread_event_channels.get_mut(&thread_id) {
+            channel.model_provider_uses_manifest = model_provider_uses_manifest;
+            let store = Arc::clone(&channel.store);
+            let mut store = store.lock().await;
             store.set_session(session.clone(), turns.clone());
             store.rebase_buffer_after_session_refresh();
         }

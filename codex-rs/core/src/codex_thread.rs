@@ -63,6 +63,12 @@ use codex_rollout::state_db::StateDbHandle;
 pub struct ThreadConfigSnapshot {
     pub model: String,
     pub model_provider_id: String,
+    /// Whether this thread's effective provider catalog comes from an
+    /// authoritative provider manifest. App-server lifecycle responses expose
+    /// this as an optional compatibility hint so clients can avoid unnecessary
+    /// model-list calls for ordinary providers while still recognizing
+    /// same-ID provider overrides.
+    pub model_provider_uses_manifest: bool,
     pub service_tier: Option<String>,
     pub approval_policy: AskForApproval,
     pub approvals_reviewer: ApprovalsReviewer,

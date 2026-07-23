@@ -2745,6 +2745,7 @@ mod tests {
                 },
                 model: "gpt-5".to_string(),
                 model_provider: "openai".to_string(),
+                model_provider_uses_manifest: None,
                 service_tier: None,
                 cwd,
                 runtime_workspace_roots: Vec::new(),

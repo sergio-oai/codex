@@ -44,25 +44,34 @@ async fn thread_catalog_refresh_preserves_ordinary_local_behavior() {
 
     assert!(
         !should_refresh_thread_model_catalog(
-            &config,
             ModelCatalogProvenance::KnownOrdinary,
-            Some(ordinary_provider_id.as_str()),
+            effective_thread_provider_uses_manifest(
+                &config,
+                ordinary_provider_id.as_str(),
+                /*reported_uses_manifest*/ None,
+            ),
         ),
         "known ordinary providers keep the startup-only model listing path"
     );
     assert!(
         should_refresh_thread_model_catalog(
-            &config,
             ModelCatalogProvenance::KnownOrdinary,
-            Some("restored-provider"),
+            effective_thread_provider_uses_manifest(
+                &config,
+                "restored-provider",
+                /*reported_uses_manifest*/ None,
+            ),
         ),
         "a provider restored outside the local config must be treated as unknown"
     );
     assert!(
         should_refresh_thread_model_catalog(
-            &config,
             ModelCatalogProvenance::Unknown,
-            Some(ordinary_provider_id.as_str()),
+            effective_thread_provider_uses_manifest(
+                &config,
+                ordinary_provider_id.as_str(),
+                /*reported_uses_manifest*/ None,
+            ),
         ),
         "unknown catalog provenance must be refreshed before reuse"
     );
@@ -75,19 +84,68 @@ async fn thread_catalog_refresh_preserves_ordinary_local_behavior() {
         .insert("manifest".to_string(), manifest_provider);
     assert!(
         should_refresh_thread_model_catalog(
-            &manifest_config,
             ModelCatalogProvenance::KnownOrdinary,
-            Some("manifest"),
+            effective_thread_provider_uses_manifest(
+                &manifest_config,
+                "manifest",
+                /*reported_uses_manifest*/ None,
+            ),
         ),
         "switching to a manifest-backed target needs its thread catalog"
     );
     assert!(
         should_refresh_thread_model_catalog(
-            &config,
             ModelCatalogProvenance::KnownManifest,
-            Some(ordinary_provider_id.as_str()),
+            effective_thread_provider_uses_manifest(
+                &config,
+                ordinary_provider_id.as_str(),
+                /*reported_uses_manifest*/ None,
+            ),
         ),
         "a same-ID config reload cannot reclassify a manifest-backed current catalog as ordinary"
+    );
+    assert!(
+        should_refresh_thread_model_catalog(
+            ModelCatalogProvenance::KnownOrdinary,
+            effective_thread_provider_uses_manifest(
+                &config,
+                ordinary_provider_id.as_str(),
+                /*reported_uses_manifest*/ Some(true),
+            ),
+        ),
+        "the loaded thread's effective manifest hint must win over a same-ID ordinary local provider"
+    );
+    assert!(
+        !should_refresh_thread_model_catalog(
+            ModelCatalogProvenance::KnownOrdinary,
+            effective_thread_provider_uses_manifest(
+                &manifest_config,
+                "manifest",
+                /*reported_uses_manifest*/ Some(false),
+            ),
+        ),
+        "the loaded thread's ordinary-provider hint must win over a same-ID local manifest"
+    );
+}
+
+#[tokio::test]
+async fn loaded_thread_catalog_refresh_keeps_server_manifest_hint() {
+    let mut app = make_test_app().await;
+    let thread_id = ThreadId::new();
+    let channel = app.ensure_thread_channel(thread_id);
+    channel.model_provider_uses_manifest = Some(true);
+    let store = Arc::clone(&channel.store);
+    {
+        let mut store = store.lock().await;
+        store.set_session(
+            super::test_thread_session(thread_id, test_path_buf("/tmp/thread")),
+            Vec::new(),
+        );
+    }
+
+    assert_eq!(
+        app.loaded_thread_model_provider(thread_id).await,
+        Some(("test-provider".to_string(), Some(true)))
     );
 }
 

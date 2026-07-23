@@ -1333,10 +1333,12 @@ impl ThreadRequestProcessor {
             thread_response_active_permission_profile(config_snapshot.active_permission_profile);
         let thread_originator = config_snapshot.originator.clone();
 
+        let model_provider_uses_manifest = config_snapshot.model_provider_uses_manifest;
         let response = ThreadStartResponse {
             thread: thread.clone(),
             model: config_snapshot.model,
             model_provider: config_snapshot.model_provider_id,
+            model_provider_uses_manifest: Some(model_provider_uses_manifest),
             service_tier: config_snapshot.service_tier,
             cwd,
             runtime_workspace_roots: config_snapshot.workspace_roots,
@@ -1348,7 +1350,7 @@ impl ThreadRequestProcessor {
             reasoning_effort: config_snapshot.reasoning_effort,
             multi_agent_mode: MultiAgentMode::ExplicitRequestOnly,
         };
-        let notif = thread_started_notification(thread);
+        let notif = thread_started_notification(thread, model_provider_uses_manifest);
         listener_task_context
             .outgoing
             .send_response_with_thread_originator(request_id, response, thread_originator)
@@ -3345,6 +3347,9 @@ impl ThreadRequestProcessor {
                     thread,
                     model: session_configured.model,
                     model_provider: session_configured.model_provider_id,
+                    model_provider_uses_manifest: Some(
+                        config_snapshot.model_provider_uses_manifest,
+                    ),
                     service_tier: session_configured.service_tier,
                     cwd: session_configured.cwd,
                     runtime_workspace_roots: config_snapshot.workspace_roots,
@@ -4239,11 +4244,13 @@ impl ThreadRequestProcessor {
         let active_permission_profile =
             thread_response_active_permission_profile(config_snapshot.active_permission_profile);
         let thread_originator = config_snapshot.originator.clone();
+        let model_provider_uses_manifest = config_snapshot.model_provider_uses_manifest;
 
         let response = ThreadForkResponse {
             thread: thread.clone(),
             model: session_configured.model,
             model_provider: session_configured.model_provider_id,
+            model_provider_uses_manifest: Some(model_provider_uses_manifest),
             service_tier: session_configured.service_tier,
             cwd: session_configured.cwd,
             runtime_workspace_roots: config_snapshot.workspace_roots,
@@ -4256,7 +4263,7 @@ impl ThreadRequestProcessor {
             multi_agent_mode: MultiAgentMode::ExplicitRequestOnly,
         };
 
-        let notif = thread_started_notification(thread);
+        let notif = thread_started_notification(thread, model_provider_uses_manifest);
         let connection_id = request_id.connection_id;
         let token_usage_turn_id =
             include_turns.then(|| restored_token_usage_turn_id(&history_items, &response.thread));

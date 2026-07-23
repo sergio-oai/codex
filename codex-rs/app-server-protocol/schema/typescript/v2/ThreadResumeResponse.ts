@@ -9,7 +9,12 @@ import type { AskForApproval } from "./AskForApproval";
 import type { SandboxPolicy } from "./SandboxPolicy";
 import type { Thread } from "./Thread";
 
-export type ThreadResumeResponse = {thread: Thread, model: string, modelProvider: string, serviceTier: string | null, cwd: AbsolutePathBuf, /**
+export type ThreadResumeResponse = {thread: Thread, model: string, modelProvider: string, /**
+ * Whether the effective provider uses an authoritative provider manifest.
+ * Older app servers omit this hint; clients should then preserve their
+ * existing provider-identification fallback.
+ */
+modelProviderUsesManifest: boolean | null, serviceTier: string | null, cwd: AbsolutePathBuf, /**
  * Environment-native paths to instruction source files currently loaded for this thread.
  */
 instructionSources: Array<LegacyAppPathString>, approvalPolicy: AskForApproval, /**

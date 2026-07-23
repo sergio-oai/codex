@@ -28,6 +28,10 @@ pub struct SpawnAgentToolOptions {
     pub agent_type_description: String,
     pub expose_agent_type: bool,
     pub hide_agent_type_model_reasoning: bool,
+    /// Provider-manifest descriptions are useful in user-facing model lists,
+    /// but remain provider-controlled prose and must not enter model-visible
+    /// spawn-agent instructions.
+    pub suppress_model_descriptions: bool,
     pub expose_spawn_agent_model_overrides: bool,
     pub multi_agent_version: MultiAgentVersion,
     pub usage_hint_text: Option<String>,
@@ -40,6 +44,7 @@ impl Default for SpawnAgentToolOptions {
             agent_type_description: String::new(),
             expose_agent_type: true,
             hide_agent_type_model_reasoning: false,
+            suppress_model_descriptions: false,
             expose_spawn_agent_model_overrides: false,
             multi_agent_version: MultiAgentVersion::Disabled,
             usage_hint_text: None,
@@ -66,7 +71,11 @@ impl Default for WaitAgentTimeoutOptions {
 
 pub fn create_spawn_agent_tool_v1(options: SpawnAgentToolOptions) -> ToolSpec {
     let available_models_description = (!options.hide_agent_type_model_reasoning).then(|| {
-        spawn_agent_models_description(&options.available_models, options.multi_agent_version)
+        spawn_agent_models_description(
+            &options.available_models,
+            options.multi_agent_version,
+            options.suppress_model_descriptions,
+        )
     });
     let inherited_model_guidance =
         (!options.hide_agent_type_model_reasoning).then_some(SPAWN_AGENT_INHERITED_MODEL_GUIDANCE);
@@ -101,7 +110,11 @@ pub fn create_spawn_agent_tool_v1(options: SpawnAgentToolOptions) -> ToolSpec {
 
 pub fn create_spawn_agent_tool_v2(options: SpawnAgentToolOptions) -> ToolSpec {
     let available_models_description = options.expose_spawn_agent_model_overrides.then(|| {
-        spawn_agent_models_description(&options.available_models, options.multi_agent_version)
+        spawn_agent_models_description(
+            &options.available_models,
+            options.multi_agent_version,
+            options.suppress_model_descriptions,
+        )
     });
     let inherited_model_guidance = (options.expose_spawn_agent_model_overrides
         && !options.hide_agent_type_model_reasoning)
@@ -781,6 +794,7 @@ Note that passing `fork_turns="none"` will not pass any surrounding context to t
 fn spawn_agent_models_description(
     models: &[ModelPreset],
     multi_agent_version: MultiAgentVersion,
+    suppress_model_descriptions: bool,
 ) -> String {
     let visible_models: Vec<&ModelPreset> = models
         .iter()
@@ -833,9 +847,13 @@ fn spawn_agent_models_description(
                 format!(" Service tiers: {service_tiers}.")
             };
             let model_slug = &model.model;
-            let description = &model.description;
+            let description = if suppress_model_descriptions {
+                String::new()
+            } else {
+                format!(" {}", model.description)
+            };
             format!(
-                "- `{model_slug}`: {description}{reasoning_efforts_suffix}{service_tiers_suffix}"
+                "- `{model_slug}`:{description}{reasoning_efforts_suffix}{service_tiers_suffix}"
             )
         })
         .collect::<Vec<_>>()

@@ -171,6 +171,11 @@ pub struct ThreadStartResponse {
     pub thread: Thread,
     pub model: String,
     pub model_provider: String,
+    /// Whether the effective provider uses an authoritative provider manifest.
+    /// Older app servers omit this hint; clients should then preserve their
+    /// existing provider-identification fallback.
+    #[serde(default)]
+    pub model_provider_uses_manifest: Option<bool>,
     pub service_tier: Option<String>,
     pub cwd: AbsolutePathBuf,
     /// Thread-scoped runtime workspace roots used to materialize
@@ -404,6 +409,11 @@ pub struct ThreadResumeResponse {
     pub thread: Thread,
     pub model: String,
     pub model_provider: String,
+    /// Whether the effective provider uses an authoritative provider manifest.
+    /// Older app servers omit this hint; clients should then preserve their
+    /// existing provider-identification fallback.
+    #[serde(default)]
+    pub model_provider_uses_manifest: Option<bool>,
     pub service_tier: Option<String>,
     pub cwd: AbsolutePathBuf,
     /// Thread-scoped runtime workspace roots used to materialize
@@ -596,6 +606,11 @@ pub struct ThreadForkResponse {
     pub thread: Thread,
     pub model: String,
     pub model_provider: String,
+    /// Whether the effective provider uses an authoritative provider manifest.
+    /// Older app servers omit this hint; clients should then preserve their
+    /// existing provider-identification fallback.
+    #[serde(default)]
+    pub model_provider_uses_manifest: Option<bool>,
     pub service_tier: Option<String>,
     pub cwd: AbsolutePathBuf,
     /// Thread-scoped runtime workspace roots used to materialize
@@ -1533,6 +1548,11 @@ impl From<CoreTokenUsage> for TokenUsageBreakdown {
 #[ts(export_to = "v2/")]
 pub struct ThreadStartedNotification {
     pub thread: Thread,
+    /// Whether the effective provider uses an authoritative provider manifest.
+    /// Older app servers omit this hint; clients should then preserve their
+    /// existing provider-identification fallback.
+    #[serde(default)]
+    pub model_provider_uses_manifest: Option<bool>,
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone, PartialEq, JsonSchema, TS)]

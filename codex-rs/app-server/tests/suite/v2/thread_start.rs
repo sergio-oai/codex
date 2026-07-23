@@ -165,6 +165,7 @@ provider_manifest_path = "codex/provider-manifest"
         .await?;
 
     assert_eq!(response.model, "venado-only");
+    assert_eq!(response.model_provider_uses_manifest, Some(true));
     let requests = server
         .received_requests()
         .await
@@ -508,6 +509,7 @@ async fn thread_start_creates_thread_and_emits_started() -> Result<()> {
     let started: ThreadStartedNotification =
         serde_json::from_value(notif.params.expect("params must be present"))?;
     assert_eq!(started.thread, thread);
+    assert_eq!(started.model_provider_uses_manifest, Some(false));
 
     Ok(())
 }

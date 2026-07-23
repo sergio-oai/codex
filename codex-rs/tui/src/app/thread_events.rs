@@ -315,6 +315,10 @@ pub(super) struct ThreadEventChannel {
     pub(super) sender: mpsc::Sender<ThreadBufferedEvent>,
     pub(super) receiver: Option<mpsc::Receiver<ThreadBufferedEvent>>,
     pub(super) store: Arc<Mutex<ThreadEventStore>>,
+    /// Optional effective-provider hint from a thread lifecycle response.
+    /// Keep it beside the per-thread replay channel so later /agent switches
+    /// use the same manifest decision as the original resume/fork.
+    pub(super) model_provider_uses_manifest: Option<bool>,
     attachment: ThreadEventAttachment,
 }
 
@@ -325,6 +329,7 @@ impl ThreadEventChannel {
             sender,
             receiver: Some(receiver),
             store: Arc::new(Mutex::new(ThreadEventStore::new(capacity))),
+            model_provider_uses_manifest: None,
             attachment: ThreadEventAttachment::Live,
         }
     }
@@ -350,6 +355,7 @@ impl ThreadEventChannel {
             store: Arc::new(Mutex::new(ThreadEventStore::new_with_session(
                 capacity, session, turns,
             ))),
+            model_provider_uses_manifest: None,
             attachment: ThreadEventAttachment::Live,
         }
     }

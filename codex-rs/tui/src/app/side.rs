@@ -581,6 +581,7 @@ impl App {
             Ok(forked) => {
                 let child_thread_id = forked.session.thread_id;
                 let channel = self.ensure_thread_channel(child_thread_id);
+                channel.model_provider_uses_manifest = forked.model_provider_uses_manifest;
                 {
                     let mut store = channel.store.lock().await;
                     Self::install_side_thread_snapshot(&mut store, forked.session, forked.turns);

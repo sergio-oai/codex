@@ -202,13 +202,10 @@ fn to_model_info(
     } else {
         manifest_model.display_name
     };
-    // ModelPreset descriptions are interpolated verbatim into the
-    // model-visible spawn_agent tool instructions. Provider-controlled prose
-    // therefore must not become ModelInfo.description, even when it is short
-    // and single-line; semantic prompt injection cannot be made safe by
-    // escaping punctuation. Keep the provider description schema-compatible
-    // and bounded above, but omit it from the model-visible catalog.
-    model.description = None;
+    // Keep bounded provider prose for user-facing model lists and pickers.
+    // The spawn-agent tool renderer suppresses descriptions for
+    // manifest-backed turns before building model-visible instructions.
+    model.description = Some(manifest_model.description);
     model.default_reasoning_level = manifest_model.default_reasoning_effort;
     model.supported_reasoning_levels = manifest_model
         .supported_reasoning_efforts
@@ -365,6 +362,7 @@ fn validate_service_tiers(manifest_model: &ProviderManifestModel) -> Result<(), 
     }
 
     let mut seen_ids = HashSet::new();
+    let mut seen_command_names = HashSet::new();
     for service_tier in &manifest_model.service_tiers {
         validate_model_visible_token(
             "service tier id",
@@ -393,6 +391,13 @@ fn validate_service_tiers(manifest_model: &ProviderManifestModel) -> Result<(), 
             return Err(format!(
                 "provider manifest model {} contains duplicate service tier id {}",
                 manifest_model.id, service_tier.id
+            ));
+        }
+        let command_name = service_tier_command_name(&service_tier.id).to_ascii_lowercase();
+        if !seen_command_names.insert(command_name.clone()) {
+            return Err(format!(
+                "provider manifest model {} contains duplicate normalized service tier command {command_name}",
+                manifest_model.id
             ));
         }
     }
@@ -501,8 +506,9 @@ fn validate_model_visible_token(name: &str, value: &str, max_bytes: usize) -> Re
     Ok(())
 }
 
-/// Bounds UI-only prose and rejects line/control separators. Provider prose is
-/// intentionally not copied into model-visible ModelInfo descriptions.
+/// Bounds UI-only prose and rejects line/control separators. Manifest-backed
+/// spawn-agent rendering intentionally omits this prose from model-visible
+/// instructions.
 fn validate_bounded_single_line_text(
     name: &str,
     value: &str,
@@ -545,16 +551,20 @@ fn to_service_tier(service_tier: ProviderManifestServiceTier) -> Result<ModelSer
     // never allowed to create or shadow a built-in command. Canonical fast and
     // flex IDs retain their existing UX; provider-specific tiers live under a
     // collision-resistant tier- namespace.
-    let name = match service_tier.id.as_str() {
-        id if id == ServiceTier::Fast.request_value() => "fast".to_string(),
-        id if id == ServiceTier::Flex.request_value() => "flex".to_string(),
-        id => format!("tier-{id}"),
-    };
+    let name = service_tier_command_name(&service_tier.id);
     Ok(ModelServiceTier {
         id: service_tier.id,
         name,
         description: service_tier.description,
     })
+}
+
+fn service_tier_command_name(id: &str) -> String {
+    match id {
+        id if id == ServiceTier::Fast.request_value() => "fast".to_string(),
+        id if id == ServiceTier::Flex.request_value() => "flex".to_string(),
+        id => format!("tier-{id}"),
+    }
 }
 
 #[cfg(test)]

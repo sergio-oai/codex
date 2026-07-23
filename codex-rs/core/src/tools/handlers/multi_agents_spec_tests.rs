@@ -50,6 +50,7 @@ fn spawn_agent_tool_v2_requires_task_name_and_lists_visible_models() {
         agent_type_description: "role help".to_string(),
         expose_agent_type: true,
         hide_agent_type_model_reasoning: false,
+        suppress_model_descriptions: false,
         expose_spawn_agent_model_overrides: true,
         multi_agent_version: MultiAgentVersion::V2,
         usage_hint_text: None,
@@ -125,12 +126,35 @@ fn spawn_agent_tool_v2_requires_task_name_and_lists_visible_models() {
 }
 
 #[test]
+fn spawn_agent_tool_suppresses_manifest_model_descriptions() {
+    let tool = create_spawn_agent_tool_v2(SpawnAgentToolOptions {
+        available_models: vec![model_preset("visible", /*show_in_picker*/ true)],
+        agent_type_description: "role help".to_string(),
+        expose_agent_type: true,
+        hide_agent_type_model_reasoning: false,
+        suppress_model_descriptions: true,
+        expose_spawn_agent_model_overrides: true,
+        multi_agent_version: MultiAgentVersion::V2,
+        usage_hint_text: None,
+    });
+
+    let ToolSpec::Function(ResponsesApiTool { description, .. }) = tool else {
+        panic!("spawn_agent should be a function tool");
+    };
+    assert!(!description.contains("visible description"));
+    assert!(description.contains(
+        "- `visible-model`: Reasoning efforts: medium (default). Service tiers: priority."
+    ));
+}
+
+#[test]
 fn spawn_agent_tool_v1_keeps_legacy_fork_context_field() {
     let tool = create_spawn_agent_tool_v1(SpawnAgentToolOptions {
         available_models: Vec::new(),
         agent_type_description: "role help".to_string(),
         expose_agent_type: true,
         hide_agent_type_model_reasoning: false,
+        suppress_model_descriptions: false,
         expose_spawn_agent_model_overrides: true,
         multi_agent_version: MultiAgentVersion::V1,
         usage_hint_text: None,
@@ -196,6 +220,7 @@ fn spawn_agent_tool_caps_visible_model_summaries() {
         agent_type_description: "role help".to_string(),
         expose_agent_type: true,
         hide_agent_type_model_reasoning: false,
+        suppress_model_descriptions: false,
         expose_spawn_agent_model_overrides: true,
         multi_agent_version: MultiAgentVersion::V2,
         usage_hint_text: None,
@@ -227,7 +252,11 @@ fn spawn_agent_tool_caps_reasoning_effort_value_length() {
     }];
 
     assert_eq!(
-        spawn_agent_models_description(&[model], MultiAgentVersion::V2),
+        spawn_agent_models_description(
+            &[model],
+            MultiAgentVersion::V2,
+            /*suppress_model_descriptions*/ false,
+        ),
         format!(
             "Available model overrides (optional; inherited parent model is preferred):\n- `visible-model`: visible description Reasoning efforts: {} (default). Service tiers: priority.",
             "é".repeat(MAX_REASONING_EFFORT_CHARS_IN_SPAWN_AGENT_DESCRIPTION)
@@ -242,6 +271,7 @@ fn spawn_agent_tool_keeps_model_controls_when_spawn_metadata_is_hidden() {
         agent_type_description: "role help".to_string(),
         expose_agent_type: false,
         hide_agent_type_model_reasoning: true,
+        suppress_model_descriptions: false,
         expose_spawn_agent_model_overrides: true,
         multi_agent_version: MultiAgentVersion::V2,
         usage_hint_text: None,
@@ -275,6 +305,7 @@ fn spawn_agent_tool_hides_model_controls_without_override_exposure() {
         agent_type_description: "role help".to_string(),
         expose_agent_type: false,
         hide_agent_type_model_reasoning: true,
+        suppress_model_descriptions: false,
         expose_spawn_agent_model_overrides: false,
         multi_agent_version: MultiAgentVersion::V2,
         usage_hint_text: None,

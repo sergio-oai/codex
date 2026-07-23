@@ -326,7 +326,7 @@ impl App {
             return Ok(true);
         }
 
-        let (session, turns, live_attached) = match app_server
+        let (session, turns, live_attached, model_provider_uses_manifest) = match app_server
             .resume_thread(self.config.clone(), thread_id, self.resume_model_settings())
             .await
         {
@@ -334,7 +334,12 @@ impl App {
                 if started.blocks_direct_input {
                     self.agent_navigation.mark_parent_owned(thread_id);
                 }
-                (started.session, started.turns, true)
+                (
+                    started.session,
+                    started.turns,
+                    true,
+                    started.model_provider_uses_manifest,
+                )
             }
             Err(resume_err) => {
                 tracing::warn!(
@@ -369,10 +374,11 @@ impl App {
                 // `thread/read` can seed replay state, but it does not attach the app-server
                 // listener that `thread/resume` establishes, so treat this path as replay-only.
                 session.model.clear();
-                (session, turns, false)
+                (session, turns, false, None)
             }
         };
         let channel = self.ensure_thread_channel(thread_id);
+        channel.model_provider_uses_manifest = model_provider_uses_manifest;
         if !live_attached {
             channel.mark_replay_only();
         }
@@ -459,11 +465,18 @@ impl App {
             return Ok(());
         }
         if !is_replay_only {
-            let target_provider_id = self.loaded_thread_model_provider_id(thread_id).await;
+            let target_provider = self.loaded_thread_model_provider(thread_id).await;
+            let target_provider_id = target_provider
+                .as_ref()
+                .map(|(provider_id, _)| provider_id.as_str());
+            let reported_uses_manifest = target_provider
+                .as_ref()
+                .and_then(|(_, reported_uses_manifest)| *reported_uses_manifest);
             self.refresh_model_catalog_for_thread(
                 app_server,
                 thread_id,
-                target_provider_id.as_deref(),
+                target_provider_id,
+                reported_uses_manifest,
             )
             .await?;
         }
@@ -594,6 +607,8 @@ impl App {
                 if started.blocks_direct_input {
                     self.mark_primary_thread_parent_owned(started.session.thread_id);
                 }
+                self.ensure_thread_channel(started.session.thread_id)
+                    .model_provider_uses_manifest = started.model_provider_uses_manifest;
                 self.enqueue_primary_thread_session(started.session, started.turns)
                     .await?;
                 self.chat_widget.maybe_send_next_queued_input();
@@ -721,9 +736,12 @@ impl App {
             app_server,
             started.session.thread_id,
             Some(target_provider_id.as_str()),
+            started.model_provider_uses_manifest,
         )
         .await?;
         self.reset_thread_event_state();
+        self.ensure_thread_channel(started.session.thread_id)
+            .model_provider_uses_manifest = started.model_provider_uses_manifest;
         let init = self.chatwidget_init_for_forked_or_resumed_thread(
             tui,
             self.config.clone(),
@@ -747,16 +765,20 @@ impl App {
     /// A newly attached channel can still be missing its session snapshot. In
     /// that case callers must treat the provider as unknown and use the
     /// thread-scoped catalog path.
-    async fn loaded_thread_model_provider_id(&self, thread_id: ThreadId) -> Option<String> {
-        let store = self
-            .thread_event_channels
-            .get(&thread_id)
-            .map(|channel| Arc::clone(&channel.store))?;
+    pub(super) async fn loaded_thread_model_provider(
+        &self,
+        thread_id: ThreadId,
+    ) -> Option<(String, Option<bool>)> {
+        let channel = self.thread_event_channels.get(&thread_id)?;
+        let model_provider_uses_manifest = channel.model_provider_uses_manifest;
+        let store = Arc::clone(&channel.store);
         let store = store.lock().await;
-        store
-            .session
-            .as_ref()
-            .map(|session| session.model_provider_id.clone())
+        store.session.as_ref().map(|session| {
+            (
+                session.model_provider_id.clone(),
+                model_provider_uses_manifest,
+            )
+        })
     }
 
     /// Refresh the active UI catalog from the loaded thread's effective provider
@@ -771,16 +793,23 @@ impl App {
         app_server: &mut AppServerSession,
         thread_id: ThreadId,
         target_provider_id: Option<&str>,
+        reported_uses_manifest: Option<bool>,
     ) -> Result<()> {
+        let target_provider_uses_manifest = target_provider_id.and_then(|provider_id| {
+            effective_thread_provider_uses_manifest(
+                &self.config,
+                provider_id,
+                reported_uses_manifest,
+            )
+        });
         if !should_refresh_thread_model_catalog(
-            &self.config,
             self.model_catalog_provenance,
-            target_provider_id,
+            target_provider_uses_manifest,
         ) {
             return Ok(());
         }
         let catalog_provenance =
-            model_catalog_provenance_for_provider(&self.config, target_provider_id);
+            model_catalog_provenance_for_manifest_status(target_provider_uses_manifest);
         let scoped_models = app_server
             .refresh_available_models_for_thread(thread_id)
             .await

@@ -3432,6 +3432,7 @@ async fn inactive_thread_started_notification_initializes_replay_session() -> Re
     app.enqueue_thread_notification(
         agent_thread_id,
         ServerNotification::ThreadStarted(ThreadStartedNotification {
+            model_provider_uses_manifest: Some(true),
             thread: Thread {
                 id: agent_thread_id.to_string(),
                 extra: None,
@@ -3484,6 +3485,17 @@ async fn inactive_thread_started_notification_initializes_replay_session() -> Re
     );
     assert_eq!(session.rollout_path, Some(rollout_path));
     assert_eq!(
+        app.thread_event_channels
+            .get(&agent_thread_id)
+            .expect("agent thread channel")
+            .model_provider_uses_manifest,
+        Some(true)
+    );
+    assert_eq!(
+        app.loaded_thread_model_provider(agent_thread_id).await,
+        Some(("agent-provider".to_string(), Some(true)))
+    );
+    assert_eq!(
         app.agent_navigation.get(&agent_thread_id),
         Some(&AgentPickerThreadEntry {
             agent_nickname: Some("Robie".to_string()),
@@ -3528,6 +3540,7 @@ async fn inactive_thread_started_notification_preserves_primary_model_when_path_
     app.enqueue_thread_notification(
         agent_thread_id,
         ServerNotification::ThreadStarted(ThreadStartedNotification {
+            model_provider_uses_manifest: None,
             thread: Thread {
                 id: agent_thread_id.to_string(),
                 extra: None,
@@ -4093,6 +4106,7 @@ async fn primary_thread_ignores_child_mcp_startup_notifications() {
             session: test_thread_session(child_thread_id, test_path_buf("/tmp/child")),
             turns: Vec::new(),
             blocks_direct_input: false,
+            model_provider_uses_manifest: None,
         },
         &mut child_snapshot,
     )
@@ -6763,6 +6777,7 @@ async fn refreshed_snapshot_session_persists_resumed_turns() {
             session: resumed_session.clone(),
             turns: resumed_turns.clone(),
             blocks_direct_input: true,
+            model_provider_uses_manifest: None,
         },
         &mut snapshot,
     )

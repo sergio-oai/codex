@@ -205,6 +205,7 @@ fn thread_resume_response_round_trips_initial_turns_page() {
         },
         model: "gpt-5".to_string(),
         model_provider: "openai".to_string(),
+        model_provider_uses_manifest: Some(true),
         service_tier: None,
         cwd: absolute_path("tmp"),
         runtime_workspace_roots: Vec::new(),
@@ -225,6 +226,7 @@ fn thread_resume_response_round_trips_initial_turns_page() {
     };
 
     let value = serde_json::to_value(&response).expect("serialize thread resume response");
+    assert_eq!(value.get("modelProviderUsesManifest"), Some(&json!(true)));
     assert_eq!(
         value.get("initialTurnsPage"),
         Some(&json!({

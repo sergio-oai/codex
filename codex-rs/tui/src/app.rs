@@ -530,6 +530,12 @@ fn model_catalog_provenance_for_provider(
 ) -> ModelCatalogProvenance {
     let uses_manifest =
         provider_id.and_then(|provider_id| configured_provider_uses_manifest(config, provider_id));
+    model_catalog_provenance_for_manifest_status(uses_manifest)
+}
+
+fn model_catalog_provenance_for_manifest_status(
+    uses_manifest: Option<bool>,
+) -> ModelCatalogProvenance {
     match uses_manifest {
         Some(false) => ModelCatalogProvenance::KnownOrdinary,
         Some(true) => ModelCatalogProvenance::KnownManifest,
@@ -537,23 +543,31 @@ fn model_catalog_provenance_for_provider(
     }
 }
 
+/// Prefer the loaded thread's effective provider hint when a new app server
+/// supplies it. Older servers omit the hint, so preserve the existing local
+/// provider-ID lookup instead of adding a new model-list RPC for ordinary
+/// remote sessions.
+fn effective_thread_provider_uses_manifest(
+    config: &Config,
+    provider_id: &str,
+    reported_uses_manifest: Option<bool>,
+) -> Option<bool> {
+    reported_uses_manifest.or_else(|| configured_provider_uses_manifest(config, provider_id))
+}
+
 /// Whether the active TUI catalog must be reloaded from a loaded thread.
 ///
 /// Ordinary providers historically share the startup catalog, so keep that
 /// no-extra-request behavior when both provider kinds are known and neither
-/// provider opted into manifests. Manifest-backed or unknown provider state
-/// cannot safely reuse that process-level catalog.
+/// provider opted into manifests. A new app server reports the loaded
+/// thread's effective manifest status so same-ID provider overrides cannot
+/// accidentally reuse the startup catalog; older servers fall back above.
 fn should_refresh_thread_model_catalog(
-    config: &Config,
     current_catalog_provenance: ModelCatalogProvenance,
-    target_provider_id: Option<&str>,
+    target_provider_uses_manifest: Option<bool>,
 ) -> bool {
     !matches!(
-        (
-            current_catalog_provenance,
-            target_provider_id
-                .and_then(|provider_id| configured_provider_uses_manifest(config, provider_id)),
-        ),
+        (current_catalog_provenance, target_provider_uses_manifest),
         (ModelCatalogProvenance::KnownOrdinary, Some(false))
     )
 }
@@ -1011,10 +1025,14 @@ impl App {
                     .resume_thread(config.clone(), target_session.thread_id, model_settings)
                     .await
                     .map_err(|err| session_start_error("resume", &target_session, err))?;
-                let should_refresh_catalog = should_refresh_thread_model_catalog(
+                let target_provider_uses_manifest = effective_thread_provider_uses_manifest(
                     &config,
+                    resumed.session.model_provider_id.as_str(),
+                    resumed.model_provider_uses_manifest,
+                );
+                let should_refresh_catalog = should_refresh_thread_model_catalog(
                     model_catalog_provenance,
-                    Some(resumed.session.model_provider_id.as_str()),
+                    target_provider_uses_manifest,
                 );
                 if should_refresh_catalog {
                     let scoped_models = app_server
@@ -1022,10 +1040,8 @@ impl App {
                         .await
                         .wrap_err("failed to load models for resumed thread")?;
                     model_catalog = Arc::new(ModelCatalog::new(scoped_models));
-                    model_catalog_provenance = model_catalog_provenance_for_provider(
-                        &config,
-                        Some(resumed.session.model_provider_id.as_str()),
-                    );
+                    model_catalog_provenance =
+                        model_catalog_provenance_for_manifest_status(target_provider_uses_manifest);
                 }
                 let init = crate::chatwidget::ChatWidgetInit {
                     config: config.clone(),
@@ -1066,10 +1082,14 @@ impl App {
                     .fork_thread(config.clone(), target_session.thread_id)
                     .await
                     .map_err(|err| session_start_error("fork", &target_session, err))?;
-                let should_refresh_catalog = should_refresh_thread_model_catalog(
+                let target_provider_uses_manifest = effective_thread_provider_uses_manifest(
                     &config,
+                    forked.session.model_provider_id.as_str(),
+                    forked.model_provider_uses_manifest,
+                );
+                let should_refresh_catalog = should_refresh_thread_model_catalog(
                     model_catalog_provenance,
-                    Some(forked.session.model_provider_id.as_str()),
+                    target_provider_uses_manifest,
                 );
                 if should_refresh_catalog {
                     let scoped_models = app_server
@@ -1077,10 +1097,8 @@ impl App {
                         .await
                         .wrap_err("failed to load models for forked thread")?;
                     model_catalog = Arc::new(ModelCatalog::new(scoped_models));
-                    model_catalog_provenance = model_catalog_provenance_for_provider(
-                        &config,
-                        Some(forked.session.model_provider_id.as_str()),
-                    );
+                    model_catalog_provenance =
+                        model_catalog_provenance_for_manifest_status(target_provider_uses_manifest);
                 }
                 let init = crate::chatwidget::ChatWidgetInit {
                     config: config.clone(),
@@ -1191,6 +1209,8 @@ See the Codex keymap documentation for supported actions and examples."
             if started.blocks_direct_input {
                 app.mark_primary_thread_parent_owned(thread_id);
             }
+            app.ensure_thread_channel(thread_id)
+                .model_provider_uses_manifest = started.model_provider_uses_manifest;
             app.enqueue_primary_thread_session(started.session, started.turns)
                 .await?;
             if should_prompt_for_paused_goal_after_startup_resume {
