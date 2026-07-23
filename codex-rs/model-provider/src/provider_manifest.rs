@@ -374,6 +374,20 @@ fn validate_service_tiers(manifest_model: &ProviderManifestModel) -> Result<(), 
                 "provider manifest service tier id `{SERVICE_TIER_DEFAULT_REQUEST_VALUE}` is reserved for standard routing"
             ));
         }
+        if let Some(canonical_service_tier) = ServiceTier::from_request_value(&service_tier.id)
+            && service_tier.id != canonical_service_tier.request_value()
+        {
+            // Session updates still accept legacy config spellings such as
+            // "fast" and canonicalize them to provider request values such as
+            // "priority". Manifest IDs are already provider request-contract
+            // values, so accepting an alias here would advertise one ID and
+            // send another.
+            let legacy_service_tier_id = &service_tier.id;
+            let canonical_service_tier_id = canonical_service_tier.request_value();
+            return Err(format!(
+                "provider manifest service tier id `{legacy_service_tier_id}` is reserved for a legacy alias; advertise `{canonical_service_tier_id}` instead"
+            ));
+        }
         validate_bounded_single_line_text(
             "service tier name",
             &service_tier.name,

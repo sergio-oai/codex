@@ -307,7 +307,9 @@ fn derives_manifest_service_tier_command_names_locally() {
         .pop()
         .expect("one model");
 
+    assert_eq!(model.service_tiers[0].id, "priority");
     assert_eq!(model.service_tiers[0].name, "fast");
+    assert_eq!(model.service_tiers[1].id, "custom");
     assert_eq!(model.service_tiers[1].name, "tier-custom");
 }
 
@@ -332,6 +334,30 @@ fn rejects_reserved_default_service_tier_id() {
         parse_provider_manifest(&body)
             .expect_err("reserved default tier should fail")
             .contains("reserved for standard routing")
+    );
+}
+
+#[test]
+fn rejects_legacy_fast_service_tier_alias() {
+    let body = serde_json::to_vec(&json!({
+        "schema_version": 1,
+        "models": [{
+            "id": "venado-tiered",
+            "display_name": "Venado tiered",
+            "context_window": 16384,
+            "service_tiers": [{
+                "id": "fast",
+                "name": "Fast",
+                "description": "Ambiguous legacy tier alias"
+            }]
+        }]
+    }))
+    .expect("manifest serializes");
+
+    assert!(
+        parse_provider_manifest(&body)
+            .expect_err("legacy fast alias should fail")
+            .contains("reserved for a legacy alias")
     );
 }
 
