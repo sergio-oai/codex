@@ -423,6 +423,42 @@ impl AppServerSession {
         self.managed_new_thread_defaults.as_ref()
     }
 
+    /// Load the catalog for a loaded thread's effective provider.
+    ///
+    /// `bootstrap()` has to list the process-level provider because no thread exists yet.
+    /// A resumed or forked thread can restore a different provider, so the TUI must make a
+    /// second, thread-scoped request before it builds model- and service-tier-dependent UI.
+    pub(crate) async fn refresh_available_models_for_thread(
+        &mut self,
+        thread_id: ThreadId,
+    ) -> Result<Vec<ModelPreset>> {
+        let request_id = self.next_request_id();
+        let response: ModelListResponse = self
+            .client
+            .request_typed(ClientRequest::ModelList {
+                request_id,
+                params: ModelListParams {
+                    thread_id: Some(thread_id.to_string()),
+                    cursor: None,
+                    limit: None,
+                    include_hidden: Some(true),
+                },
+            })
+            .await
+            .map_err(|err| bootstrap_request_error("model/list failed for loaded thread", err))?;
+        let available_models = response
+            .data
+            .into_iter()
+            .map(model_preset_from_api_model)
+            .collect::<Vec<_>>();
+        if available_models.is_empty() {
+            return Err(color_eyre::eyre::eyre!(
+                "model/list returned no models for loaded thread {thread_id}"
+            ));
+        }
+        Ok(available_models)
+    }
+
     /// Fetches the current account info without refreshing the auth token.
     ///
     /// Used by both `bootstrap` (to populate the initial UI) and `get_login_status`
@@ -1921,6 +1957,11 @@ mod tests {
     use codex_utils_path_uri::LegacyAppPathString;
     use pretty_assertions::assert_eq;
     use tempfile::TempDir;
+    use wiremock::Mock;
+    use wiremock::MockServer;
+    use wiremock::ResponseTemplate;
+    use wiremock::matchers::method;
+    use wiremock::matchers::path;
 
     async fn build_config(temp_dir: &TempDir) -> Config {
         ConfigBuilder::default()
@@ -1928,6 +1969,86 @@ mod tests {
             .build()
             .await
             .expect("config should build")
+    }
+
+    #[tokio::test]
+    async fn refresh_available_models_for_thread_uses_loaded_thread_provider() -> Result<()> {
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/v1/codex/provider-manifest"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "schema_version": 1,
+                "models": [{
+                    "id": "venado-only",
+                    "display_name": "Venado only",
+                    "description": "Only advertised by the loaded thread provider",
+                    "context_window": 32_000,
+                    "max_input_tokens": 24_000,
+                    "default_reasoning_effort": "medium",
+                    "supported_reasoning_efforts": ["medium"],
+                    "service_tiers": []
+                }]
+            })))
+            .expect(1)
+            .mount(&server)
+            .await;
+
+        let codex_home = tempfile::tempdir().expect("tempdir");
+        std::fs::write(
+            codex_home.path().join("config.toml"),
+            format!(
+                r#"
+model_provider = "openai"
+
+[model_providers.venado]
+name = "Venado"
+base_url = "{}/v1"
+env_key = "PATH"
+wire_api = "responses"
+provider_manifest_path = "codex/provider-manifest"
+"#,
+                server.uri()
+            ),
+        )
+        .expect("write config");
+        let config = ConfigBuilder::default()
+            .codex_home(codex_home.path().to_path_buf())
+            .build()
+            .await
+            .expect("config should build");
+        let mut app_server = crate::start_embedded_app_server_for_picker(&config).await?;
+        let mut thread_config = config.clone();
+        thread_config.model_provider_id = "venado".to_string();
+        thread_config.model_provider = thread_config
+            .model_providers
+            .get("venado")
+            .cloned()
+            .expect("venado provider should load from config");
+        thread_config.model = None;
+
+        let started = app_server.start_thread(&thread_config).await?;
+        let scoped_models = app_server
+            .refresh_available_models_for_thread(started.session.thread_id)
+            .await?;
+
+        assert_eq!(
+            scoped_models
+                .iter()
+                .map(|model| model.model.as_str())
+                .collect::<Vec<_>>(),
+            vec!["venado-only"]
+        );
+        assert!(
+            app_server
+                .available_models
+                .iter()
+                .all(|model| model.model != "venado-only"),
+            "thread-scoped catalogs must not replace startup defaults"
+        );
+        assert_ne!(app_server.default_model.as_deref(), Some("venado-only"));
+        app_server.shutdown().await?;
+        server.verify().await;
+        Ok(())
     }
 
     fn rate_limit_snapshot(limit_id: &str) -> RateLimitSnapshot {

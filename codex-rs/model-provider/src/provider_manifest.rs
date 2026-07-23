@@ -3,6 +3,7 @@ use std::collections::HashSet;
 use codex_models_manager::bundled_models_response;
 use codex_models_manager::model_info::BASE_INSTRUCTIONS;
 use codex_protocol::config_types::ReasoningSummary;
+use codex_protocol::config_types::SERVICE_TIER_DEFAULT_REQUEST_VALUE;
 use codex_protocol::config_types::ServiceTier;
 use codex_protocol::openai_models::ConfigShellToolType;
 use codex_protocol::openai_models::InputModality;
@@ -22,9 +23,12 @@ const SUPPORTED_SCHEMA_VERSION: u32 = 1;
 // descriptions bounded independently of the HTTP client's response limits.
 pub(crate) const MAX_PROVIDER_MANIFEST_BYTES: usize = 256 * 1024;
 const MAX_PROVIDER_MANIFEST_MODELS: usize = 128;
-// spawn_agent exposes at most five picker-visible models. Keep the aggregate
-// manifest-controlled part of that tool description comfortably below one
-// thousand tokens even when every exposed model uses every allowed option.
+// spawn_agent exposes at most five picker-visible models. Bound the exact
+// manifest-controlled identifiers that it interpolates so even the five
+// largest eligible summaries add at most a small, fixed amount of prompt
+// context. The remaining punctuation and labels are local Codex text.
+const MAX_MODEL_VISIBLE_MANIFEST_MODELS: usize = 5;
+const MAX_MODEL_VISIBLE_MANIFEST_BYTES: usize = 512;
 const MAX_MODEL_ID_BYTES: usize = 64;
 const MAX_MODEL_DISPLAY_NAME_BYTES: usize = 128;
 const MAX_MODEL_DESCRIPTION_BYTES: usize = 512;
@@ -115,14 +119,16 @@ pub(crate) fn parse_provider_manifest(body: &[u8]) -> Result<Vec<ModelInfo>, Str
         .map_err(|err| format!("failed to load bundled model metadata: {err}"))?
         .models;
     let mut seen_ids = HashSet::new();
-    manifest
+    let models = manifest
         .models
         .into_iter()
         .enumerate()
         .map(|(priority, manifest_model)| {
             to_model_info(manifest_model, priority, &bundled_models, &mut seen_ids)
         })
-        .collect()
+        .collect::<Result<Vec<_>, _>>()?;
+    validate_model_visible_catalog_budget(&models)?;
+    Ok(models)
 }
 
 fn to_model_info(
@@ -348,6 +354,11 @@ fn validate_service_tiers(manifest_model: &ProviderManifestModel) -> Result<(), 
             &service_tier.id,
             MAX_SERVICE_TIER_ID_BYTES,
         )?;
+        if service_tier.id == SERVICE_TIER_DEFAULT_REQUEST_VALUE {
+            return Err(format!(
+                "provider manifest service tier id `{SERVICE_TIER_DEFAULT_REQUEST_VALUE}` is reserved for standard routing"
+            ));
+        }
         validate_bounded_single_line_text(
             "service tier name",
             &service_tier.name,
@@ -369,6 +380,49 @@ fn validate_service_tiers(manifest_model: &ProviderManifestModel) -> Result<(), 
         }
     }
     Ok(())
+}
+
+/// Keeps the remote-controlled part of the spawn_agent model summary small.
+///
+/// The renderer can select at most five models after applying local
+/// multi-agent compatibility filters. Measure the five largest candidates
+/// rather than the first five so changing those filters cannot reveal a
+/// larger unchecked combination later.
+fn validate_model_visible_catalog_budget(models: &[ModelInfo]) -> Result<(), String> {
+    let mut model_visible_bytes = models
+        .iter()
+        .map(model_visible_manifest_bytes)
+        .collect::<Vec<_>>();
+    model_visible_bytes.sort_unstable_by(|left, right| right.cmp(left));
+
+    let total = model_visible_bytes
+        .into_iter()
+        .take(MAX_MODEL_VISIBLE_MANIFEST_MODELS)
+        .try_fold(0usize, |total, model_bytes| {
+            total.checked_add(model_bytes).ok_or_else(|| {
+                "provider manifest model-visible metadata size overflowed".to_string()
+            })
+        })?;
+    if total > MAX_MODEL_VISIBLE_MANIFEST_BYTES {
+        return Err(format!(
+            "provider manifest model-visible metadata must be no more than {MAX_MODEL_VISIBLE_MANIFEST_BYTES} bytes across any {MAX_MODEL_VISIBLE_MANIFEST_MODELS} models"
+        ));
+    }
+    Ok(())
+}
+
+fn model_visible_manifest_bytes(model: &ModelInfo) -> usize {
+    model.slug.len()
+        + model
+            .supported_reasoning_levels
+            .iter()
+            .map(|preset| preset.effort.as_str().len())
+            .sum::<usize>()
+        + model
+            .service_tiers
+            .iter()
+            .map(|tier| tier.id.len())
+            .sum::<usize>()
 }
 
 fn default_provider_manifest_input_modalities() -> Vec<InputModality> {

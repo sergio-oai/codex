@@ -118,6 +118,61 @@ async fn provider_manifest_selects_model_and_omits_unsupported_fast_tier_impl() 
 }
 
 #[test]
+fn provider_manifest_rejects_unadvertised_configured_model() -> Result<()> {
+    run_provider_manifest_test(
+        "provider_manifest_rejects_unadvertised_configured_model",
+        || {
+            let runtime = tokio::runtime::Builder::new_current_thread()
+                .enable_all()
+                .build()?;
+            runtime.block_on(provider_manifest_rejects_unadvertised_configured_model_impl())
+        },
+    )
+}
+
+async fn provider_manifest_rejects_unadvertised_configured_model_impl() -> Result<()> {
+    skip_if_no_network!(Ok(()));
+
+    let server = MockServer::start().await;
+    Mock::given(method("GET"))
+        .and(path("/v1/codex/provider-manifest"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "schema_version": 1,
+            "models": [{
+                "id": "venado-only",
+                "display_name": "Venado only",
+                "service_tiers": []
+            }]
+        })))
+        .expect(1)
+        .mount(&server)
+        .await;
+
+    let mut builder = test_codex().with_config(|config| {
+        config.model = Some("not-advertised".to_string());
+        config.model_provider.provider_manifest_path = Some("codex/provider-manifest".to_string());
+    });
+    let error = match builder.build(&server).await {
+        Ok(_) => {
+            return Err(anyhow::anyhow!(
+                "session startup unexpectedly accepted an unadvertised manifest model"
+            ));
+        }
+        Err(error) => error,
+    };
+
+    assert!(
+        error.to_string().contains(
+            "provider manifest codex/provider-manifest does not advertise configured model not-advertised"
+        ),
+        "unexpected startup error: {error:#}"
+    );
+
+    server.verify().await;
+    Ok(())
+}
+
+#[test]
 fn provider_manifest_outage_fails_startup_with_or_without_configured_model() -> Result<()> {
     run_provider_manifest_test(
         "provider_manifest_outage_fails_startup_with_or_without_configured_model",
@@ -193,12 +248,39 @@ fn spawned_child_role_fetches_unloaded_provider_manifest() -> Result<()> {
                 .thread_stack_size(8 * 1024 * 1024)
                 .enable_all()
                 .build()?;
-            runtime.block_on(spawned_child_role_fetches_unloaded_provider_manifest_impl())
+            runtime.block_on(spawned_child_role_fetches_unloaded_provider_manifest_impl(
+                ManifestChildSpawnMode::RequestedModel,
+            ))
         },
     )
 }
 
-async fn spawned_child_role_fetches_unloaded_provider_manifest_impl() -> Result<()> {
+#[test]
+fn spawned_child_role_reasoning_only_loads_unloaded_provider_manifest() -> Result<()> {
+    run_provider_manifest_test(
+        "spawned_child_role_reasoning_only_loads_unloaded_provider_manifest",
+        || {
+            let runtime = tokio::runtime::Builder::new_multi_thread()
+                .worker_threads(2)
+                .thread_stack_size(8 * 1024 * 1024)
+                .enable_all()
+                .build()?;
+            runtime.block_on(spawned_child_role_fetches_unloaded_provider_manifest_impl(
+                ManifestChildSpawnMode::RoleLockedReasoningOnly,
+            ))
+        },
+    )
+}
+
+#[derive(Clone, Copy)]
+enum ManifestChildSpawnMode {
+    RequestedModel,
+    RoleLockedReasoningOnly,
+}
+
+async fn spawned_child_role_fetches_unloaded_provider_manifest_impl(
+    mode: ManifestChildSpawnMode,
+) -> Result<()> {
     skip_if_no_network!(Ok(()));
 
     const PARENT_PROMPT: &str = "spawn the manifest-backed worker";
@@ -231,11 +313,20 @@ async fn spawned_child_role_fetches_unloaded_provider_manifest_impl() -> Result<
         .mount(&server)
         .await;
 
-    let spawn_args = serde_json::to_string(&json!({
-        "message": CHILD_PROMPT,
-        "agent_type": ROLE_NAME,
-        "service_tier": "priority",
-    }))?;
+    let spawn_args = match mode {
+        ManifestChildSpawnMode::RequestedModel => serde_json::to_string(&json!({
+            "message": CHILD_PROMPT,
+            "agent_type": ROLE_NAME,
+            "model": MANIFEST_MODEL,
+            "service_tier": "priority",
+        }))?,
+        ManifestChildSpawnMode::RoleLockedReasoningOnly => serde_json::to_string(&json!({
+            "message": CHILD_PROMPT,
+            "agent_type": ROLE_NAME,
+            "reasoning_effort": "medium",
+            "service_tier": "priority",
+        }))?,
+    };
     mount_sse_once_match(
         &server,
         |request: &wiremock::Request| request_body_contains(request, PARENT_PROMPT),
@@ -284,11 +375,14 @@ async fn spawned_child_role_fetches_unloaded_provider_manifest_impl() -> Result<
             .enable(Feature::Collab)
             .expect("test config should allow feature update");
         let role_path = config.codex_home.join("manifest-worker-role.toml");
+        let role_model = matches!(mode, ManifestChildSpawnMode::RoleLockedReasoningOnly)
+            .then_some(format!("model = \"{MANIFEST_MODEL}\"\n"))
+            .unwrap_or_default();
         std::fs::write(
             &role_path,
             format!(
                 r#"
-model = "{MANIFEST_MODEL}"
+{role_model}
 model_provider = "venado"
 
 [model_providers.venado]
@@ -373,6 +467,12 @@ provider_manifest_path = "codex/provider-manifest"
         child_request.body_json()["service_tier"].as_str(),
         Some("priority")
     );
+    if matches!(mode, ManifestChildSpawnMode::RoleLockedReasoningOnly) {
+        assert_eq!(
+            child_request.body_json()["reasoning"]["effort"].as_str(),
+            Some("medium")
+        );
+    }
 
     server.verify().await;
     Ok(())

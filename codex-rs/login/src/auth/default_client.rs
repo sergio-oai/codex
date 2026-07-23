@@ -240,23 +240,33 @@ pub fn create_client_for_route(
     request_url: &str,
     route_class: ClientRouteClass,
 ) -> Result<HttpClient, BuildRouteAwareHttpClientError> {
+    create_client_for_route_with_builder(
+        http_client_factory,
+        request_url,
+        route_class,
+        default_http_client_builder(),
+    )
+}
+
+fn create_client_for_route_with_builder(
+    http_client_factory: &HttpClientFactory,
+    request_url: &str,
+    route_class: ClientRouteClass,
+    builder: HttpClientBuilder,
+) -> Result<HttpClient, BuildRouteAwareHttpClientError> {
     if matches!(
         http_client_factory.outbound_proxy_policy(),
         OutboundProxyPolicy::ReqwestDefault
     ) {
-        return Ok(create_client());
+        return Ok(build_default_client(builder));
     }
     if is_sandboxed() {
         // Preserve the sandbox's existing no-proxy policy; sandboxed command egress is routed
         // separately through network-proxy.
-        return Ok(create_client());
+        return Ok(build_default_client(builder));
     }
 
-    default_http_client_builder().build_respecting_outbound_proxy_policy(
-        http_client_factory,
-        request_url,
-        route_class,
-    )
+    builder.build_respecting_outbound_proxy_policy(http_client_factory, request_url, route_class)
 }
 
 /// Builds the default Codex HTTP client for a concrete outbound route without blocking the
@@ -266,14 +276,60 @@ pub async fn create_client_for_route_async(
     request_url: String,
     route_class: ClientRouteClass,
 ) -> std::io::Result<HttpClient> {
+    create_client_for_route_with_redirects_async(
+        http_client_factory,
+        request_url,
+        route_class,
+        /*follow_redirects*/ true,
+    )
+    .await
+}
+
+/// Builds the default Codex HTTP client for a concrete outbound route while
+/// refusing redirects.
+///
+/// Provider-owned metadata endpoints use this when credentials must remain
+/// scoped to the configured provider origin. Normal API traffic should keep
+/// using [`create_client_for_route_async`] so its redirect behavior is
+/// unchanged.
+pub async fn create_client_for_route_without_redirects_async(
+    http_client_factory: HttpClientFactory,
+    request_url: String,
+    route_class: ClientRouteClass,
+) -> std::io::Result<HttpClient> {
+    create_client_for_route_with_redirects_async(
+        http_client_factory,
+        request_url,
+        route_class,
+        /*follow_redirects*/ false,
+    )
+    .await
+}
+
+async fn create_client_for_route_with_redirects_async(
+    http_client_factory: HttpClientFactory,
+    request_url: String,
+    route_class: ClientRouteClass,
+    follow_redirects: bool,
+) -> std::io::Result<HttpClient> {
     let permit = ROUTE_AWARE_CLIENT_BUILD_PERMIT
         .acquire()
         .await
         .map_err(std::io::Error::other)?;
     tokio::task::spawn_blocking(move || {
         let _permit = permit;
-        create_client_for_route(&http_client_factory, &request_url, route_class)
-            .map_err(std::io::Error::from)
+        let builder = if follow_redirects {
+            default_http_client_builder()
+        } else {
+            default_http_client_builder().without_redirects()
+        };
+        create_client_for_route_with_builder(
+            &http_client_factory,
+            &request_url,
+            route_class,
+            builder,
+        )
+        .map_err(std::io::Error::from)
     })
     .await
     .map_err(std::io::Error::other)?

@@ -841,7 +841,7 @@ impl App {
         if let Some(updated_model) = config.model.clone() {
             model = updated_model;
         }
-        let model_catalog = Arc::new(ModelCatalog::new(available_models.clone()));
+        let mut model_catalog = Arc::new(ModelCatalog::new(available_models.clone()));
         let feedback_audience = bootstrap.feedback_audience;
         let auth_mode = bootstrap.auth_mode;
         let has_chatgpt_account = bootstrap.has_chatgpt_account;
@@ -941,6 +941,11 @@ impl App {
                     .resume_thread(config.clone(), target_session.thread_id, model_settings)
                     .await
                     .map_err(|err| session_start_error("resume", &target_session, err))?;
+                let scoped_models = app_server
+                    .refresh_available_models_for_thread(resumed.session.thread_id)
+                    .await
+                    .wrap_err("failed to load models for resumed thread")?;
+                model_catalog = Arc::new(ModelCatalog::new(scoped_models));
                 let init = crate::chatwidget::ChatWidgetInit {
                     config: config.clone(),
                     frame_requester: tui.frame_requester(),
@@ -980,6 +985,11 @@ impl App {
                     .fork_thread(config.clone(), target_session.thread_id)
                     .await
                     .map_err(|err| session_start_error("fork", &target_session, err))?;
+                let scoped_models = app_server
+                    .refresh_available_models_for_thread(forked.session.thread_id)
+                    .await
+                    .wrap_err("failed to load models for forked thread")?;
+                model_catalog = Arc::new(ModelCatalog::new(scoped_models));
                 let init = crate::chatwidget::ChatWidgetInit {
                     config: config.clone(),
                     frame_requester: tui.frame_requester(),

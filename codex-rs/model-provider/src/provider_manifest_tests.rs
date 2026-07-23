@@ -8,8 +8,11 @@ use serde_json::json;
 
 use super::MAX_MODEL_DESCRIPTION_BYTES;
 use super::MAX_MODEL_ID_BYTES;
+use super::MAX_MODEL_VISIBLE_MANIFEST_BYTES;
+use super::MAX_MODEL_VISIBLE_MANIFEST_MODELS;
 use super::MAX_PROVIDER_MANIFEST_BYTES;
 use super::MAX_PROVIDER_MANIFEST_MODELS;
+use super::MAX_REASONING_EFFORT_ID_BYTES;
 use super::MAX_REASONING_EFFORTS_PER_MODEL;
 use super::MAX_SERVICE_TIER_ID_BYTES;
 use super::MAX_SERVICE_TIERS_PER_MODEL;
@@ -224,6 +227,77 @@ fn derives_manifest_service_tier_command_names_locally() {
 
     assert_eq!(model.service_tiers[0].name, "fast");
     assert_eq!(model.service_tiers[1].name, "tier-custom");
+}
+
+#[test]
+fn rejects_reserved_default_service_tier_id() {
+    let body = serde_json::to_vec(&json!({
+        "schema_version": 1,
+        "models": [{
+            "id": "venado-tiered",
+            "display_name": "Venado tiered",
+            "service_tiers": [{
+                "id": "default",
+                "name": "Default",
+                "description": "Provider default tier"
+            }]
+        }]
+    }))
+    .expect("manifest serializes");
+
+    assert!(
+        parse_provider_manifest(&body)
+            .expect_err("reserved default tier should fail")
+            .contains("reserved for standard routing")
+    );
+}
+
+#[test]
+fn bounds_aggregate_model_visible_manifest_metadata() {
+    let maximal_model = |index: usize| {
+        let model_id = format!("m{index}{}", "m".repeat(MAX_MODEL_ID_BYTES - 2));
+        let supported_reasoning_efforts = (0..MAX_REASONING_EFFORTS_PER_MODEL)
+            .map(|effort| format!("e{effort}{}", "e".repeat(MAX_REASONING_EFFORT_ID_BYTES - 2)))
+            .collect::<Vec<_>>();
+        let service_tiers = (0..MAX_SERVICE_TIERS_PER_MODEL)
+            .map(|tier| {
+                json!({
+                    "id": format!("t{tier}{}", "t".repeat(MAX_SERVICE_TIER_ID_BYTES - 2)),
+                    "name": format!("Tier {tier}"),
+                    "description": ""
+                })
+            })
+            .collect::<Vec<_>>();
+        json!({
+            "id": model_id,
+            "display_name": format!("Model {index}"),
+            "supported_reasoning_efforts": supported_reasoning_efforts,
+            "service_tiers": service_tiers,
+            "multi_agent_version": "v2"
+        })
+    };
+    let one_maximal_model = serde_json::to_vec(&json!({
+        "schema_version": 1,
+        "models": [maximal_model(0)]
+    }))
+    .expect("manifest serializes");
+    let too_much_visible_metadata = serde_json::to_vec(&json!({
+        "schema_version": 1,
+        "models": (0..MAX_MODEL_VISIBLE_MANIFEST_MODELS)
+            .map(maximal_model)
+            .collect::<Vec<_>>()
+    }))
+    .expect("manifest serializes");
+
+    parse_provider_manifest(&one_maximal_model)
+        .expect("one individually bounded model should parse");
+    assert!(
+        parse_provider_manifest(&too_much_visible_metadata)
+            .expect_err("aggregate model-visible metadata should fail")
+            .contains(&format!(
+                "no more than {MAX_MODEL_VISIBLE_MANIFEST_BYTES} bytes"
+            ))
+    );
 }
 
 #[test]

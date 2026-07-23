@@ -20,6 +20,7 @@ use codex_login::AuthManager;
 use codex_login::CodexAuth;
 use codex_login::collect_auth_env_telemetry;
 use codex_login::default_client::create_client_for_route_async;
+use codex_login::default_client::create_client_for_route_without_redirects_async;
 use codex_model_provider_info::ModelProviderInfo;
 use codex_models_manager::manager::ModelCatalogPolicy;
 use codex_models_manager::manager::ModelsEndpointClient;
@@ -120,7 +121,11 @@ impl OpenAiModelsEndpoint {
         timeout(MODELS_REFRESH_TIMEOUT, async {
             let transport = self
                 .transport_builder
-                .build(http_client_factory, request_url.clone())
+                .build(
+                    http_client_factory,
+                    request_url.clone(),
+                    uses_provider_manifest,
+                )
                 .await?;
             let client = ModelsClient::new(transport, api_provider, api_auth)
                 .with_telemetry(Some(request_telemetry));
@@ -197,6 +202,7 @@ trait ModelsTransportBuilder: fmt::Debug + Send + Sync {
         &self,
         http_client_factory: HttpClientFactory,
         request_url: String,
+        uses_provider_manifest: bool,
     ) -> ModelsTransportFuture<'_>;
 }
 
@@ -208,11 +214,30 @@ impl ModelsTransportBuilder for RouteAwareModelsTransportBuilder {
         &self,
         http_client_factory: HttpClientFactory,
         request_url: String,
+        uses_provider_manifest: bool,
     ) -> ModelsTransportFuture<'_> {
         Box::pin(async move {
-            create_client_for_route_async(http_client_factory, request_url, ClientRouteClass::Api)
-                .await
-                .map(ReqwestTransport::from_http_client)
+            let client = if uses_provider_manifest {
+                create_client_for_route_without_redirects_async(
+                    http_client_factory,
+                    request_url,
+                    ClientRouteClass::Api,
+                )
+                .await?
+            } else {
+                create_client_for_route_async(
+                    http_client_factory,
+                    request_url,
+                    ClientRouteClass::Api,
+                )
+                .await?
+            };
+            let transport = ReqwestTransport::from_http_client(client);
+            Ok(if uses_provider_manifest {
+                transport.with_max_stream_error_body_bytes(MAX_PROVIDER_MANIFEST_BYTES)
+            } else {
+                transport
+            })
         })
     }
 }
@@ -344,6 +369,7 @@ mod tests {
             &self,
             http_client_factory: HttpClientFactory,
             request_url: String,
+            _uses_provider_manifest: bool,
         ) -> ModelsTransportFuture<'_> {
             let observed_request = Arc::clone(&self.observed_request);
             Box::pin(async move {
@@ -446,6 +472,52 @@ mod tests {
             endpoint.catalog_policy(),
             ModelCatalogPolicy::AuthoritativeRemote
         );
+    }
+
+    #[tokio::test]
+    async fn provider_manifest_does_not_follow_cross_origin_redirects() {
+        let redirect_target = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/stolen-manifest"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "schema_version": 1,
+                "models": []
+            })))
+            .expect(0)
+            .mount(&redirect_target)
+            .await;
+
+        let provider_server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/codex/provider-manifest"))
+            .respond_with(ResponseTemplate::new(302).insert_header(
+                "Location",
+                format!("{}/stolen-manifest", redirect_target.uri()),
+            ))
+            .expect(1)
+            .mount(&provider_server)
+            .await;
+
+        let mut provider_info =
+            ModelProviderInfo::create_openai_provider(Some(provider_server.uri()));
+        provider_info.requires_openai_auth = false;
+        provider_info.provider_manifest_path = Some("codex/provider-manifest".to_string());
+        provider_info.http_headers = Some(std::collections::HashMap::from([(
+            "x-provider-token".to_string(),
+            "secret-token".to_string(),
+        )]));
+        let endpoint = OpenAiModelsEndpoint::new(provider_info, /*auth_manager*/ None);
+
+        endpoint
+            .list_models(
+                "0.0.0",
+                HttpClientFactory::new(OutboundProxyPolicy::ReqwestDefault),
+            )
+            .await
+            .expect_err("provider manifest redirects should be rejected");
+
+        provider_server.verify().await;
+        redirect_target.verify().await;
     }
 
     #[tokio::test]

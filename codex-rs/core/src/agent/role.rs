@@ -29,6 +29,16 @@ use toml::Value as TomlValue;
 pub const DEFAULT_ROLE_NAME: &str = "default";
 const AGENT_TYPE_UNAVAILABLE_ERROR: &str = "agent type is currently not available";
 
+/// Model settings explicitly owned by an applied role.
+///
+/// Spawn-time overrides may fill settings a role leaves unset, but must not
+/// replace values that the role declares as locked.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub(crate) struct AgentRoleModelLocks {
+    pub(crate) model: bool,
+    pub(crate) reasoning_effort: bool,
+}
+
 /// Applies a named role layer to `config` while preserving caller-owned provider settings.
 ///
 /// The role layer is inserted at session-flag precedence so it can override persisted config, but
@@ -38,7 +48,7 @@ const AGENT_TYPE_UNAVAILABLE_ERROR: &str = "agent type is currently not availabl
 pub(crate) async fn apply_role_to_config(
     config: &mut Config,
     role_name: Option<&str>,
-) -> Result<(), String> {
+) -> Result<AgentRoleModelLocks, String> {
     let role_name = role_name.unwrap_or(DEFAULT_ROLE_NAME);
 
     let role = resolve_role_config(config, role_name)
@@ -57,18 +67,22 @@ async fn apply_role_to_config_inner(
     config: &mut Config,
     role_name: &str,
     role: &AgentRoleConfig,
-) -> anyhow::Result<()> {
+) -> anyhow::Result<AgentRoleModelLocks> {
     let is_built_in = !config.agent_roles.contains_key(role_name);
     let Some(config_file) = role.config_file.as_ref() else {
-        return Ok(());
+        return Ok(AgentRoleModelLocks::default());
     };
     let role_layer_toml = load_role_layer_toml(config, config_file, is_built_in, role_name).await?;
     if role_layer_toml
         .as_table()
         .is_some_and(toml::map::Map::is_empty)
     {
-        return Ok(());
+        return Ok(AgentRoleModelLocks::default());
     }
+    let model_locks = AgentRoleModelLocks {
+        model: role_layer_toml.get("model").is_some(),
+        reasoning_effort: role_layer_toml.get("model_reasoning_effort").is_some(),
+    };
     let preserve_current_provider = role_layer_toml.get("model_provider").is_none();
     let preserve_current_service_tier = role_layer_toml.get("service_tier").is_none();
 
@@ -79,7 +93,7 @@ async fn apply_role_to_config_inner(
         preserve_current_service_tier,
     )
     .await?;
-    Ok(())
+    Ok(model_locks)
 }
 
 async fn load_role_layer_toml(

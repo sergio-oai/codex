@@ -1,3 +1,4 @@
+use crate::agent::role::AgentRoleModelLocks;
 use crate::agent::role::apply_role_to_config;
 use crate::config::Config;
 use crate::config::DEFAULT_MULTI_AGENT_V2_MIN_WAIT_TIMEOUT_MS;
@@ -249,28 +250,48 @@ pub(crate) async fn apply_requested_spawn_agent_model_overrides(
     config: &mut Config,
     requested_model: Option<&str>,
     requested_reasoning_effort: Option<ReasoningEffort>,
+    role_locks: AgentRoleModelLocks,
 ) -> Result<(), FunctionCallError> {
-    let requested_model = requested_model.or(turn.config.agent_default_subagent_model.as_deref());
-    let requested_reasoning_effort = requested_reasoning_effort
-        .or_else(|| turn.config.agent_default_subagent_reasoning_effort.clone());
+    let requested_model = (!role_locks.model)
+        .then(|| requested_model.or(turn.config.agent_default_subagent_model.as_deref()))
+        .flatten();
+    let requested_reasoning_effort = (!role_locks.reasoning_effort)
+        .then(|| {
+            requested_reasoning_effort
+                .or_else(|| turn.config.agent_default_subagent_reasoning_effort.clone())
+        })
+        .flatten();
     if requested_model.is_none() && requested_reasoning_effort.is_none() {
         return Ok(());
     }
 
+    let models_manager = models_manager_for_spawn_config(session, turn, config).await?;
+    let refresh_strategy = if config.model_provider.provider_manifest_path.is_some() {
+        RefreshStrategy::OnlineIfUncached
+    } else {
+        RefreshStrategy::Offline
+    };
+    if config.model_provider.provider_manifest_path.is_some() {
+        // A role can lock the child model while the tool call supplies only a
+        // reasoning override. Load a newly selected manifest provider before
+        // either override branch asks for model metadata; otherwise the
+        // reasoning-only path sees bundled fallback metadata and rejects a
+        // model the manifest does advertise.
+        let _ = models_manager
+            .list_models(refresh_strategy, config.http_client_factory())
+            .await;
+    }
+
     if let Some(requested_model) = requested_model {
-        let available_models = session
-            .services
-            .models_manager
-            .list_models(RefreshStrategy::Offline, config.http_client_factory())
+        let available_models = models_manager
+            .list_models(refresh_strategy, config.http_client_factory())
             .await;
         let selected_model_name = find_spawn_agent_model_name(
             &available_models,
             requested_model,
             turn.multi_agent_version,
         )?;
-        let selected_model_info = session
-            .services
-            .models_manager
+        let selected_model_info = models_manager
             .get_model_info(&selected_model_name, &config.to_models_manager_config())
             .await;
 
@@ -282,7 +303,7 @@ pub(crate) async fn apply_requested_spawn_agent_model_overrides(
                 &reasoning_effort,
             )?;
             config.model_reasoning_effort = Some(reasoning_effort);
-        } else {
+        } else if !role_locks.reasoning_effort {
             config.model_reasoning_effort = selected_model_info.default_reasoning_level;
         }
 
@@ -290,9 +311,25 @@ pub(crate) async fn apply_requested_spawn_agent_model_overrides(
     }
 
     if let Some(reasoning_effort) = requested_reasoning_effort {
+        let model = config.model.as_deref().ok_or_else(|| {
+            FunctionCallError::RespondToModel(
+                "spawn_agent could not resolve the child model for reasoning effort validation"
+                    .to_string(),
+            )
+        })?;
+        let model_info = models_manager
+            .get_model_info(model, &config.to_models_manager_config())
+            .await;
+        if model_info.used_fallback_model_metadata
+            && config.model_provider.provider_manifest_path.is_some()
+        {
+            return Err(FunctionCallError::RespondToModel(format!(
+                "Unknown model {model} for spawn_agent."
+            )));
+        }
         validate_spawn_agent_reasoning_effort(
-            &turn.model_info.slug,
-            &turn.model_info.supported_reasoning_levels,
+            model,
+            &model_info.supported_reasoning_levels,
             &reasoning_effort,
         )?;
         config.model_reasoning_effort = Some(reasoning_effort);
@@ -303,6 +340,7 @@ pub(crate) async fn apply_requested_spawn_agent_model_overrides(
 
 pub(crate) async fn apply_spawn_agent_service_tier(
     session: &Session,
+    turn: &TurnContext,
     config: &mut Config,
     parent_service_tier: Option<&str>,
     requested_service_tier: Option<&str>,
@@ -322,7 +360,7 @@ pub(crate) async fn apply_spawn_agent_service_tier(
             "spawn_agent could not resolve the child model for service tier validation".to_string(),
         )
     })?;
-    let models_manager = models_manager_for_spawn_config(session, config).await?;
+    let models_manager = models_manager_for_spawn_config(session, turn, config).await?;
     if config.model_provider.provider_manifest_path.is_some() {
         let _ = models_manager
             .list_models(
@@ -364,27 +402,32 @@ pub(crate) async fn apply_spawn_agent_service_tier(
 }
 
 pub(crate) async fn apply_spawn_agent_role(
-    session: &Session,
-    turn: &TurnContext,
     config: &mut Config,
     role_name: Option<&str>,
-) -> Result<(), FunctionCallError> {
-    let previous_model = config.model.clone();
-    let previous_reasoning_effort = config.model_reasoning_effort.clone();
+) -> Result<AgentRoleModelLocks, FunctionCallError> {
     apply_role_to_config(config, role_name)
         .await
-        .map_err(FunctionCallError::RespondToModel)?;
+        .map_err(FunctionCallError::RespondToModel)
+}
+
+pub(crate) async fn validate_spawn_agent_role_settings(
+    session: &Session,
+    turn: &TurnContext,
+    config: &Config,
+    role_locks: AgentRoleModelLocks,
+) -> Result<(), FunctionCallError> {
     let provider_changed = config.model_provider != turn.config.model_provider
         || config.model_catalog != turn.config.model_catalog;
-    let scoped_models_manager = if provider_changed {
-        Some(models_manager_for_spawn_config(session, config).await?)
-    } else {
-        None
-    };
-    let models_manager = scoped_models_manager
-        .as_ref()
-        .unwrap_or(&session.services.models_manager);
     let uses_provider_manifest = config.model_provider.provider_manifest_path.is_some();
+    if !uses_provider_manifest
+        && !provider_changed
+        && !role_locks.model
+        && !role_locks.reasoning_effort
+    {
+        return Ok(());
+    }
+
+    let models_manager = models_manager_for_spawn_config(session, turn, config).await?;
     if uses_provider_manifest {
         let available_models = models_manager
             .list_models(
@@ -397,10 +440,7 @@ pub(crate) async fn apply_spawn_agent_role(
         }
     }
 
-    if config.model == previous_model
-        && config.model_reasoning_effort == previous_reasoning_effort
-        && !provider_changed
-    {
+    if !provider_changed && !role_locks.model && !role_locks.reasoning_effort {
         return Ok(());
     }
 
@@ -434,8 +474,14 @@ pub(crate) async fn apply_spawn_agent_role(
 
 async fn models_manager_for_spawn_config(
     session: &Session,
+    turn: &TurnContext,
     config: &Config,
 ) -> Result<SharedModelsManager, FunctionCallError> {
+    if config.model_provider == turn.config.model_provider
+        && config.model_catalog == turn.config.model_catalog
+    {
+        return Ok(Arc::clone(&session.services.models_manager));
+    }
     session
         .services
         .agent_control

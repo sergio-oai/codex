@@ -617,15 +617,21 @@ impl Session {
                 config.http_client_factory(),
             )
             .await;
-        if let Some(path) = config.model_provider.provider_manifest_path.as_deref()
-            && (model.is_empty()
-                || available_models
-                    .as_ref()
-                    .is_some_and(std::vec::Vec::is_empty))
-        {
-            return Err(CodexErr::Fatal(format!(
-                "provider manifest {path} did not yield an available model; verify the manifest endpoint and try again"
-            )));
+        if let Some(path) = config.model_provider.provider_manifest_path.as_deref() {
+            let manifest_models = available_models.as_deref().unwrap_or_default();
+            if model.is_empty() || manifest_models.is_empty() {
+                return Err(CodexErr::Fatal(format!(
+                    "provider manifest {path} did not yield an available model; verify the manifest endpoint and try again"
+                )));
+            }
+            if !manifest_models
+                .iter()
+                .any(|available_model| available_model.model == model)
+            {
+                return Err(CodexErr::Fatal(format!(
+                    "provider manifest {path} does not advertise configured model {model}; choose a listed model or enable provider model fallback"
+                )));
+            }
         }
         if allow_provider_model_fallback
             && let Some(requested_model) = config.model.as_ref()

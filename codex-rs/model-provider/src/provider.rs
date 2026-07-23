@@ -330,6 +330,24 @@ impl ModelProvider for ConfiguredModelProvider {
         codex_home: PathBuf,
         config_model_catalog: Option<ModelsResponse>,
     ) -> SharedModelsManager {
+        if self.info.provider_manifest_path.is_some() {
+            // An explicitly configured provider manifest is this provider's
+            // authoritative catalog. Prefer it over a process-level static
+            // catalog so the opt-in cannot silently be ignored.
+            let endpoint = Arc::new(OpenAiModelsEndpoint::new(
+                self.info.clone(),
+                self.auth_manager.clone(),
+            ));
+            // Provider manifests are intentionally not persisted in the
+            // shared models cache. That cache is not provider-scoped, so
+            // reusing it could leak one provider's authoritative catalog into
+            // another provider after a config switch.
+            return Arc::new(OpenAiModelsManager::new_without_cache(
+                endpoint,
+                self.auth_manager.clone(),
+            ));
+        }
+
         match config_model_catalog {
             Some(model_catalog) => Arc::new(StaticModelsManager::new(
                 self.auth_manager.clone(),
@@ -340,22 +358,11 @@ impl ModelProvider for ConfiguredModelProvider {
                     self.info.clone(),
                     self.auth_manager.clone(),
                 ));
-                if self.info.provider_manifest_path.is_some() {
-                    // Provider manifests are intentionally not persisted in the
-                    // shared models cache. That cache is not provider-scoped,
-                    // so reusing it could leak one provider's authoritative
-                    // catalog into another provider after a config switch.
-                    Arc::new(OpenAiModelsManager::new_without_cache(
-                        endpoint,
-                        self.auth_manager.clone(),
-                    ))
-                } else {
-                    Arc::new(OpenAiModelsManager::new(
-                        codex_home,
-                        endpoint,
-                        self.auth_manager.clone(),
-                    ))
-                }
+                Arc::new(OpenAiModelsManager::new(
+                    codex_home,
+                    endpoint,
+                    self.auth_manager.clone(),
+                ))
             }
         }
     }
@@ -364,6 +371,19 @@ impl ModelProvider for ConfiguredModelProvider {
         &self,
         config_model_catalog: Option<ModelsResponse>,
     ) -> SharedModelsManager {
+        if self.info.provider_manifest_path.is_some() {
+            // Keep manifest-backed thread managers authoritative even when a
+            // process-level static catalog is also configured.
+            let endpoint = Arc::new(OpenAiModelsEndpoint::new(
+                self.info.clone(),
+                self.auth_manager.clone(),
+            ));
+            return Arc::new(OpenAiModelsManager::new_without_cache(
+                endpoint,
+                self.auth_manager.clone(),
+            ));
+        }
+
         match config_model_catalog {
             Some(model_catalog) => Arc::new(StaticModelsManager::new(
                 self.auth_manager.clone(),
@@ -801,6 +821,57 @@ mod tests {
         );
         assert_eq!(catalog.models[0].service_tiers, Vec::new());
         assert_eq!(catalog.models[0].default_service_tier, None);
+    }
+
+    #[tokio::test]
+    async fn provider_manifest_takes_precedence_over_static_model_catalog() {
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/codex/provider-manifest"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+                "schema_version": 1,
+                "models": [{
+                    "id": "manifest-model",
+                    "display_name": "manifest-model",
+                    "description": "Manifest model",
+                    "context_window": null,
+                    "max_input_tokens": 16_384,
+                    "default_reasoning_effort": null,
+                    "supported_reasoning_efforts": [],
+                    "service_tiers": []
+                }]
+            })))
+            .expect(2)
+            .mount(&server)
+            .await;
+
+        let mut provider_info = provider_for(server.uri());
+        provider_info.provider_manifest_path = Some("codex/provider-manifest".to_string());
+        let provider = create_model_provider(provider_info, /*auth_manager*/ None);
+        let static_catalog = ModelsResponse {
+            models: vec![remote_model("static-model")],
+        };
+        let managers = [
+            provider.models_manager(test_codex_home(), Some(static_catalog.clone())),
+            provider.models_manager_without_cache(Some(static_catalog)),
+        ];
+
+        for manager in managers {
+            let catalog = manager
+                .raw_model_catalog(
+                    RefreshStrategy::Online,
+                    HttpClientFactory::new(OutboundProxyPolicy::ReqwestDefault),
+                )
+                .await;
+            assert_eq!(
+                catalog
+                    .models
+                    .iter()
+                    .map(|model| model.slug.as_str())
+                    .collect::<Vec<_>>(),
+                vec!["manifest-model"]
+            );
+        }
     }
 
     #[tokio::test]

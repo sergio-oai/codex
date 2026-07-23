@@ -1,6 +1,8 @@
 use super::*;
 use serde_json::json;
+use std::io::Read;
 use std::io::Write;
+use std::net::TcpListener;
 use std::sync::Arc;
 use std::sync::Mutex;
 use std::time::Duration;
@@ -26,6 +28,47 @@ async fn disabled_request_logging_suppresses_transport_url_and_body() {
     assert!(logs.contains("log capture sentinel"));
     assert!(!logs.contains("url-secret"));
     assert!(!logs.contains("body-secret"));
+}
+
+#[tokio::test]
+async fn bounded_stream_error_body_stops_at_configured_limit() {
+    let listener = TcpListener::bind(("127.0.0.1", 0)).expect("HTTP listener should bind");
+    let address = listener
+        .local_addr()
+        .expect("HTTP listener should have an address");
+    let server = std::thread::spawn(move || {
+        let (mut stream, _) = listener.accept().expect("HTTP listener should accept");
+        let mut request = [0_u8; 1024];
+        let bytes_read = stream
+            .read(&mut request)
+            .expect("HTTP listener should read request");
+        assert!(bytes_read > 0, "HTTP listener should receive a request");
+        let body = "x".repeat(1024);
+        let response = format!(
+            "HTTP/1.1 400 Bad Request\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+            body.len()
+        );
+        // The bounded client may close the response as soon as it has enough
+        // bytes, so a later write failure is expected and irrelevant here.
+        let _ = stream.write_all(response.as_bytes());
+    });
+
+    let transport =
+        ReqwestTransport::new(test_reqwest_client()).with_max_stream_error_body_bytes(16);
+    let request = Request::new(Method::GET, format!("http://{address}/manifest"));
+    let error = match transport.stream(request).await {
+        Ok(_) => panic!("non-success response should return an HTTP error"),
+        Err(error) => error,
+    };
+
+    match error {
+        TransportError::Http { status, body, .. } => {
+            assert_eq!(status, StatusCode::BAD_REQUEST);
+            assert_eq!(body.as_deref(), Some("xxxxxxxxxxxxxxxx"));
+        }
+        other => panic!("expected HTTP error, got {other:?}"),
+    }
+    server.join().expect("HTTP listener should finish");
 }
 
 fn test_reqwest_client() -> reqwest::Client {

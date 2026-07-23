@@ -36,17 +36,37 @@ pub trait HttpTransport: Send + Sync {
 #[derive(Clone, Debug)]
 pub struct ReqwestTransport {
     client: HttpClient,
+    /// Optional bound for diagnostic bodies read after a non-success streaming
+    /// response.
+    ///
+    /// Most streaming call sites preserve the historical unbounded error-body
+    /// behavior. Callers that fetch bounded remote metadata can opt into this
+    /// limit so a rejected response cannot bypass their success-body cap.
+    max_stream_error_body_bytes: Option<usize>,
 }
 
 impl ReqwestTransport {
     pub fn new(client: reqwest::Client) -> Self {
         Self {
             client: HttpClient::new(client),
+            max_stream_error_body_bytes: None,
         }
     }
 
     pub fn from_http_client(client: HttpClient) -> Self {
-        Self { client }
+        Self {
+            client,
+            max_stream_error_body_bytes: None,
+        }
+    }
+
+    /// Bound diagnostic bodies read from non-success streaming responses.
+    ///
+    /// This is intentionally opt-in so existing streaming endpoints retain
+    /// their current error reporting behavior.
+    pub fn with_max_stream_error_body_bytes(mut self, max_bytes: usize) -> Self {
+        self.max_stream_error_body_bytes = Some(max_bytes);
+        self
     }
 
     fn build(&self, req: Request) -> Result<RequestBuilder, TransportError> {
@@ -143,7 +163,10 @@ impl HttpTransport for ReqwestTransport {
         let status = resp.status();
         let headers = resp.headers().clone();
         if !status.is_success() {
-            let body = resp.text().await.ok();
+            let body = match self.max_stream_error_body_bytes {
+                Some(max_bytes) => read_limited_error_body(resp, max_bytes).await,
+                None => resp.text().await.ok(),
+            };
             return Err(TransportError::Http {
                 status,
                 url: Some(url),
@@ -160,6 +183,24 @@ impl HttpTransport for ReqwestTransport {
             bytes: Box::pin(stream),
         })
     }
+}
+
+async fn read_limited_error_body(resp: reqwest::Response, max_bytes: usize) -> Option<String> {
+    let mut body = Vec::with_capacity(max_bytes.min(8 * 1024));
+    let mut bytes = resp.bytes_stream();
+    while body.len() < max_bytes {
+        let Some(chunk) = bytes.next().await else {
+            break;
+        };
+        let chunk = chunk.ok()?;
+        let remaining = max_bytes - body.len();
+        let copy_len = remaining.min(chunk.len());
+        body.extend_from_slice(&chunk[..copy_len]);
+        if copy_len < chunk.len() {
+            break;
+        }
+    }
+    String::from_utf8(body).ok()
 }
 
 #[cfg(test)]

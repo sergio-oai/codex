@@ -458,6 +458,10 @@ impl App {
                 .add_error_message(format!("Agent thread {thread_id} is no longer available."));
             return Ok(());
         }
+        if !is_replay_only {
+            self.refresh_model_catalog_for_thread(app_server, thread_id)
+                .await?;
+        }
         let previous_thread_id = self.active_thread_id;
         self.store_active_thread_receiver().await;
         self.active_thread_id = None;
@@ -656,6 +660,7 @@ impl App {
                 if let Err(err) = self
                     .replace_chat_widget_with_app_server_thread(
                         tui,
+                        app_server,
                         started,
                         ThreadAttachPresentation::SessionLineage,
                         initial_user_message,
@@ -696,13 +701,18 @@ impl App {
     pub(super) async fn replace_chat_widget_with_app_server_thread(
         &mut self,
         tui: &mut tui::Tui,
+        app_server: &mut AppServerSession,
         started: AppServerStartedThread,
         presentation: ThreadAttachPresentation,
         initial_user_message: Option<crate::chatwidget::UserMessage>,
     ) -> Result<()> {
         // Initial messages are for freshly attached primary threads only. Thread switches and
         // resume/fork flows pass `None` so they cannot replay old history and then auto-submit a new
-        // user turn by accident.
+        // user turn by accident. Refresh before tearing down the current
+        // widget so a failed scoped catalog request leaves the active thread
+        // intact.
+        self.refresh_model_catalog_for_thread(app_server, started.session.thread_id)
+            .await?;
         self.reset_thread_event_state();
         let init = self.chatwidget_init_for_forked_or_resumed_thread(
             tui,
@@ -719,6 +729,25 @@ impl App {
             presentation,
         )
         .await?;
+        Ok(())
+    }
+
+    /// Refresh the active UI catalog from the loaded thread's effective provider.
+    ///
+    /// A resumed, forked, or selected child thread may use a provider other
+    /// than the process-level startup provider. Keep that active-thread state
+    /// on `App`; `AppServerSession` retains its startup defaults for later
+    /// fresh-thread creation.
+    pub(super) async fn refresh_model_catalog_for_thread(
+        &mut self,
+        app_server: &mut AppServerSession,
+        thread_id: ThreadId,
+    ) -> Result<()> {
+        let scoped_models = app_server
+            .refresh_available_models_for_thread(thread_id)
+            .await
+            .wrap_err_with(|| format!("failed to load models for thread {thread_id}"))?;
+        self.model_catalog = Arc::new(ModelCatalog::new(scoped_models));
         Ok(())
     }
 
@@ -984,6 +1013,7 @@ impl App {
                 match self
                     .replace_chat_widget_with_app_server_thread(
                         tui,
+                        app_server,
                         resumed,
                         ThreadAttachPresentation::SessionLineage,
                         /*initial_user_message*/ None,
