@@ -1904,9 +1904,11 @@ fn selected_and_resumed_threads_use_server_capability_for_v1_and_v2_children() -
             )
             .await?;
         assert!(resumed.blocks_direct_input);
+        let transition_config = app.config.clone();
         app.replace_chat_widget_with_app_server_thread(
             &mut tui,
             &mut app_server,
+            transition_config,
             resumed,
             crate::app::session_lifecycle::ThreadAttachPresentation::SessionLineage,
             /*initial_user_message*/ None,

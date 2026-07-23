@@ -16,6 +16,22 @@ pub(super) enum ThreadAttachPresentation {
     PromptEdit,
 }
 
+/// A thread-scoped catalog fetched before committing a visible thread switch.
+///
+/// Keeping the fetched catalog separate from App until the replacement is
+/// ready prevents a failed manifest request from mutating the current
+/// session's picker state.
+struct PreparedThreadModelCatalog {
+    catalog: Arc<ModelCatalog>,
+    provenance: ModelCatalogProvenance,
+}
+
+#[derive(Clone, Copy)]
+enum UnattachedThreadCleanupScope {
+    KeepNavigation,
+    RemoveNavigation,
+}
+
 /// Reports whether a loaded-thread backfill completed and which descendants already had their
 /// liveness metadata refreshed, allowing the picker to skip duplicate `thread/read` requests.
 #[derive(Default)]
@@ -441,12 +457,14 @@ impl App {
             .get(&thread_id)
             .is_some_and(|entry| entry.is_closed);
         let mut attached_replay_only = false;
+        let mut attached_live_thread = false;
         if self.should_attach_live_thread_for_selection(thread_id) {
             match self
                 .attach_live_thread_for_selection(app_server, thread_id)
                 .await
             {
                 Ok(live_attached) => {
+                    attached_live_thread = live_attached;
                     attached_replay_only = !live_attached;
                     if attached_replay_only {
                         is_replay_only = true;
@@ -464,7 +482,7 @@ impl App {
                 .add_error_message(format!("Agent thread {thread_id} is no longer available."));
             return Ok(());
         }
-        if !is_replay_only {
+        let prepared_catalog = if !is_replay_only {
             let target_provider = self.loaded_thread_model_provider(thread_id).await;
             let target_provider_id = target_provider
                 .as_ref()
@@ -472,14 +490,32 @@ impl App {
             let reported_uses_manifest = target_provider
                 .as_ref()
                 .and_then(|(_, reported_uses_manifest)| *reported_uses_manifest);
-            self.refresh_model_catalog_for_thread(
-                app_server,
-                thread_id,
-                target_provider_id,
-                reported_uses_manifest,
-            )
-            .await?;
-        }
+            match self
+                .prepare_model_catalog_for_thread(
+                    app_server,
+                    &self.config,
+                    thread_id,
+                    target_provider_id,
+                    reported_uses_manifest,
+                )
+                .await
+            {
+                Ok(prepared_catalog) => prepared_catalog,
+                Err(err) => {
+                    if attached_live_thread {
+                        self.cleanup_unattached_thread(
+                            app_server,
+                            thread_id,
+                            UnattachedThreadCleanupScope::KeepNavigation,
+                        )
+                        .await;
+                    }
+                    return Err(err);
+                }
+            }
+        } else {
+            None
+        };
         let previous_thread_id = self.active_thread_id;
         self.store_active_thread_receiver().await;
         self.active_thread_id = None;
@@ -504,6 +540,10 @@ impl App {
 
         self.active_thread_id = Some(thread_id);
         self.active_thread_rx = Some(receiver);
+        if let Some(prepared_catalog) = prepared_catalog {
+            self.model_catalog = prepared_catalog.catalog;
+            self.model_catalog_provenance = prepared_catalog.provenance;
+        }
 
         let init = self.chatwidget_init_for_forked_or_resumed_thread(
             tui,
@@ -635,7 +675,6 @@ impl App {
         // until the new session is configured and any replayed turns have been rendered.
         self.refresh_in_memory_config_from_disk_best_effort("starting a new thread")
             .await;
-        let model = self.chat_widget.current_model().to_string();
         let mut config = self.fresh_session_config();
         apply_managed_new_thread_defaults(
             &mut config,
@@ -649,15 +688,9 @@ impl App {
             self.chat_widget.thread_name(),
             self.chat_widget.rollout_path().as_deref(),
         );
-        self.shutdown_current_thread(app_server).await;
+        let previous_thread_id = self.chat_widget.thread_id();
         let tracked_thread_ids: Vec<ThreadId> =
             self.thread_event_channels.keys().copied().collect();
-        for thread_id in tracked_thread_ids {
-            if let Err(err) = app_server.thread_unsubscribe(thread_id).await {
-                tracing::warn!("failed to unsubscribe tracked thread {thread_id}: {err}");
-            }
-        }
-        self.config = config.clone();
         match app_server
             .start_thread_with_session_start_source(&config, session_start_source)
             .await
@@ -681,6 +714,7 @@ impl App {
                     .replace_chat_widget_with_app_server_thread(
                         tui,
                         app_server,
+                        config,
                         started,
                         ThreadAttachPresentation::SessionLineage,
                         initial_user_message,
@@ -691,6 +725,16 @@ impl App {
                         "Failed to attach to fresh app-server thread: {err}"
                     ));
                 } else {
+                    for thread_id in tracked_thread_ids {
+                        if Some(thread_id) == previous_thread_id {
+                            continue;
+                        }
+                        if let Err(err) = app_server.thread_unsubscribe(thread_id).await {
+                            tracing::warn!(
+                                "failed to unsubscribe tracked thread {thread_id}: {err}"
+                            );
+                        }
+                    }
                     if let Some(err) = name_error {
                         self.chat_widget.add_error_message(err);
                     }
@@ -712,7 +756,6 @@ impl App {
                 self.chat_widget.add_error_message(format!(
                     "Failed to start a fresh session through the app server: {err}"
                 ));
-                self.config.model = Some(model);
             }
         }
         tui.frame_requester().schedule_frame();
@@ -722,6 +765,7 @@ impl App {
         &mut self,
         tui: &mut tui::Tui,
         app_server: &mut AppServerSession,
+        transition_config: Config,
         started: AppServerStartedThread,
         presentation: ThreadAttachPresentation,
         initial_user_message: Option<crate::chatwidget::UserMessage>,
@@ -731,14 +775,35 @@ impl App {
         // user turn by accident. Refresh before tearing down the current
         // widget so a failed scoped catalog request leaves the active thread
         // intact.
+        let target_thread_id = started.session.thread_id;
         let target_provider_id = started.session.model_provider_id.clone();
-        self.refresh_model_catalog_for_thread(
-            app_server,
-            started.session.thread_id,
-            Some(target_provider_id.as_str()),
-            started.model_provider_uses_manifest,
-        )
-        .await?;
+        let prepared_catalog = match self
+            .prepare_model_catalog_for_thread(
+                app_server,
+                &transition_config,
+                target_thread_id,
+                Some(target_provider_id.as_str()),
+                started.model_provider_uses_manifest,
+            )
+            .await
+        {
+            Ok(prepared_catalog) => prepared_catalog,
+            Err(err) => {
+                self.cleanup_unattached_thread(
+                    app_server,
+                    target_thread_id,
+                    UnattachedThreadCleanupScope::RemoveNavigation,
+                )
+                .await;
+                return Err(err);
+            }
+        };
+        self.shutdown_current_thread(app_server).await;
+        self.config = transition_config;
+        if let Some(prepared_catalog) = prepared_catalog {
+            self.model_catalog = prepared_catalog.catalog;
+            self.model_catalog_provenance = prepared_catalog.provenance;
+        }
         self.reset_thread_event_state();
         self.ensure_thread_channel(started.session.thread_id)
             .model_provider_uses_manifest = started.model_provider_uses_manifest;
@@ -781,32 +846,30 @@ impl App {
         })
     }
 
-    /// Refresh the active UI catalog from the loaded thread's effective provider
-    /// when the process-level startup catalog cannot be reused safely.
+    /// Prepare a thread-scoped UI catalog from the loaded thread's effective
+    /// provider when the process-level startup catalog cannot be reused safely.
     ///
     /// A resumed, forked, or selected child thread may use a provider other
-    /// than the process-level startup provider. Keep that active-thread state
-    /// on `App`; `AppServerSession` retains its startup defaults for later
-    /// fresh-thread creation.
-    pub(super) async fn refresh_model_catalog_for_thread(
-        &mut self,
+    /// than the process-level startup provider. The caller commits the
+    /// returned catalog only after the corresponding UI transition succeeds;
+    /// AppServerSession retains its startup defaults for later fresh-thread
+    /// creation.
+    async fn prepare_model_catalog_for_thread(
+        &self,
         app_server: &mut AppServerSession,
+        config: &Config,
         thread_id: ThreadId,
         target_provider_id: Option<&str>,
         reported_uses_manifest: Option<bool>,
-    ) -> Result<()> {
+    ) -> Result<Option<PreparedThreadModelCatalog>> {
         let target_provider_uses_manifest = target_provider_id.and_then(|provider_id| {
-            effective_thread_provider_uses_manifest(
-                &self.config,
-                provider_id,
-                reported_uses_manifest,
-            )
+            effective_thread_provider_uses_manifest(config, provider_id, reported_uses_manifest)
         });
         if !should_refresh_thread_model_catalog(
             self.model_catalog_provenance,
             target_provider_uses_manifest,
         ) {
-            return Ok(());
+            return Ok(None);
         }
         let catalog_provenance =
             model_catalog_provenance_for_manifest_status(target_provider_uses_manifest);
@@ -814,9 +877,36 @@ impl App {
             .refresh_available_models_for_thread(thread_id)
             .await
             .wrap_err_with(|| format!("failed to load models for thread {thread_id}"))?;
-        self.model_catalog = Arc::new(ModelCatalog::new(scoped_models));
-        self.model_catalog_provenance = catalog_provenance;
-        Ok(())
+        Ok(Some(PreparedThreadModelCatalog {
+            catalog: Arc::new(ModelCatalog::new(scoped_models)),
+            provenance: catalog_provenance,
+        }))
+    }
+
+    /// Drop a thread that was materialized only for a transition whose
+    /// catalog preflight failed, without touching the currently visible
+    /// thread.
+    async fn cleanup_unattached_thread(
+        &mut self,
+        app_server: &mut AppServerSession,
+        thread_id: ThreadId,
+        cleanup_scope: UnattachedThreadCleanupScope,
+    ) {
+        if self.chat_widget.thread_id() == Some(thread_id) {
+            return;
+        }
+        if let Err(err) = app_server.thread_unsubscribe(thread_id).await {
+            tracing::warn!("failed to unsubscribe unattached thread {thread_id}: {err}");
+        }
+        self.abort_thread_event_listener(thread_id);
+        self.thread_event_channels.remove(&thread_id);
+        self.side_threads.remove(&thread_id);
+        if matches!(
+            cleanup_scope,
+            UnattachedThreadCleanupScope::RemoveNavigation
+        ) {
+            self.agent_navigation.remove(thread_id);
+        }
     }
 
     /// Fetches all loaded threads from the app server and registers descendants of the primary
@@ -1070,18 +1160,11 @@ impl App {
         {
             Ok(resumed) => {
                 let resumed_thread_id = resumed.session.thread_id;
-                self.shutdown_current_thread(app_server).await;
-                self.config = resume_config;
-                tui.set_notification_settings(
-                    self.config.tui_notifications.method,
-                    self.config.tui_notifications.condition,
-                );
-                self.file_search
-                    .update_search_dir(self.config.cwd.to_path_buf());
                 match self
                     .replace_chat_widget_with_app_server_thread(
                         tui,
                         app_server,
+                        resume_config,
                         resumed,
                         ThreadAttachPresentation::SessionLineage,
                         /*initial_user_message*/ None,
@@ -1089,6 +1172,12 @@ impl App {
                     .await
                 {
                     Ok(()) => {
+                        tui.set_notification_settings(
+                            self.config.tui_notifications.method,
+                            self.config.tui_notifications.condition,
+                        );
+                        self.file_search
+                            .update_search_dir(self.config.cwd.to_path_buf());
                         self.backfill_loaded_subagent_threads(app_server).await;
                         if let Some(summary) = summary {
                             let mut lines: Vec<Line<'static>> = Vec::new();

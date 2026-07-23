@@ -112,10 +112,9 @@ impl App {
         );
         let retry_display = ChatWidget::user_message_display_from_inputs(items);
 
-        self.config = retry_config.clone();
         let started = app_server
             .fork_thread_at(
-                retry_config,
+                retry_config.clone(),
                 thread_id,
                 /*last_turn_id*/ None,
                 /*before_turn_id*/ Some(turn_id),
@@ -131,11 +130,11 @@ impl App {
         };
         let retry_thread_id = started.session.thread_id;
 
-        self.shutdown_current_thread(app_server).await;
         if let Err(err) = self
             .replace_chat_widget_with_app_server_thread(
                 tui,
                 app_server,
+                retry_config,
                 started,
                 ThreadAttachPresentation::SessionLineage,
                 /*initial_user_message*/ None,

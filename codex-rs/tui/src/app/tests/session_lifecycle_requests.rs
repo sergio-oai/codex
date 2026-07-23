@@ -1,10 +1,12 @@
 use super::*;
+use crate::app::session_lifecycle::ThreadAttachPresentation;
 use app_test_support::create_fake_parented_rollout_with_source;
 use app_test_support::create_fake_rollout;
 use app_test_support::rollout_path;
 use codex_app_server_protocol::ClientNotification;
 use codex_app_server_protocol::ClientRequest;
 use codex_app_server_protocol::JSONRPCError;
+use codex_app_server_protocol::JSONRPCErrorError;
 use codex_app_server_protocol::JSONRPCMessage;
 use codex_app_server_protocol::JSONRPCResponse;
 use codex_protocol::AgentPath;
@@ -16,6 +18,17 @@ use tokio::net::TcpListener;
 use tokio::task::JoinHandle;
 use tokio_tungstenite::accept_async;
 use tokio_tungstenite::tungstenite::Message;
+use wiremock::Mock;
+use wiremock::MockServer;
+use wiremock::ResponseTemplate;
+use wiremock::matchers::method;
+use wiremock::matchers::path;
+
+#[derive(Clone, Copy)]
+enum ThreadScopedModelListBehavior {
+    Forward,
+    Fail,
+}
 
 /// Returns and resets `(thread/loaded/list, thread/read)` request counts.
 fn take_backfill_counts(requests: &Arc<Mutex<Vec<String>>>) -> (usize, usize) {
@@ -35,8 +48,10 @@ fn take_backfill_counts(requests: &Arc<Mutex<Vec<String>>>) -> (usize, usize) {
 /// Starts an embedded app server behind a loopback WebSocket proxy that records JSON-RPC methods.
 async fn start_recording_app_server(
     config: &Config,
+    thread_scoped_model_list_behavior: ThreadScopedModelListBehavior,
 ) -> Result<(
     AppServerSession,
+    Arc<Mutex<Vec<String>>>,
     Arc<Mutex<Vec<String>>>,
     JoinHandle<Result<()>>,
 )> {
@@ -59,6 +74,8 @@ async fn start_recording_app_server(
     let codex_home = config.codex_home.display().to_string();
     let requests = Arc::new(Mutex::new(Vec::new()));
     let request_sink = Arc::clone(&requests);
+    let unsubscribed_thread_ids = Arc::new(Mutex::new(Vec::new()));
+    let unsubscribe_sink = Arc::clone(&unsubscribed_thread_ids);
     let listener = TcpListener::bind("127.0.0.1:0").await?;
     let websocket_url = format!("ws://{}", listener.local_addr()?);
     let proxy = tokio::spawn(async move {
@@ -89,18 +106,51 @@ async fn start_recording_app_server(
                         .lock()
                         .expect("request recorder lock")
                         .push(request.method.clone());
+                    if request.method == "thread/unsubscribe"
+                        && let Some(thread_id) = request
+                            .params
+                            .as_ref()
+                            .and_then(|params| params.get("threadId"))
+                            .and_then(serde_json::Value::as_str)
+                    {
+                        unsubscribe_sink
+                            .lock()
+                            .expect("unsubscribe recorder lock")
+                            .push(thread_id.to_string());
+                    }
                     let request_id = request.id.clone();
-                    let request =
-                        serde_json::from_value::<ClientRequest>(serde_json::to_value(request)?)?;
-                    let response = match embedded.request(request).await? {
-                        Ok(result) => JSONRPCMessage::Response(JSONRPCResponse {
+                    let should_fail_thread_scoped_model_list = matches!(
+                        thread_scoped_model_list_behavior,
+                        ThreadScopedModelListBehavior::Fail
+                    ) && request.method == "model/list"
+                        && request
+                            .params
+                            .as_ref()
+                            .and_then(|params| params.get("threadId"))
+                            .is_some_and(|thread_id| !thread_id.is_null());
+                    let response = if should_fail_thread_scoped_model_list {
+                        JSONRPCMessage::Error(JSONRPCError {
                             id: request_id,
-                            result,
-                        }),
-                        Err(error) => JSONRPCMessage::Error(JSONRPCError {
-                            id: request_id,
-                            error,
-                        }),
+                            error: JSONRPCErrorError {
+                                code: -32603,
+                                message: "forced thread-scoped model/list failure".to_string(),
+                                data: None,
+                            },
+                        })
+                    } else {
+                        let request = serde_json::from_value::<ClientRequest>(
+                            serde_json::to_value(request)?,
+                        )?;
+                        match embedded.request(request).await? {
+                            Ok(result) => JSONRPCMessage::Response(JSONRPCResponse {
+                                id: request_id,
+                                result,
+                            }),
+                            Err(error) => JSONRPCMessage::Error(JSONRPCError {
+                                id: request_id,
+                                error,
+                            }),
+                        }
                     };
                     websocket
                         .send(Message::Text(serde_json::to_string(&response)?.into()))
@@ -133,6 +183,7 @@ async fn start_recording_app_server(
             crate::app_server_session::ThreadParamsMode::Embedded,
         ),
         requests,
+        unsubscribed_thread_ids,
         proxy,
     ))
 }
@@ -153,8 +204,9 @@ fn fresh_session_applies_requested_name() -> Result<()> {
                 let codex_home = tempdir()?;
                 app.config.codex_home = codex_home.path().to_path_buf().abs();
                 app.config.sqlite_home = codex_home.path().to_path_buf();
-                let (mut app_server, requests, proxy) =
-                    start_recording_app_server(&app.config).await?;
+                let (mut app_server, requests, _unsubscribed_thread_ids, proxy) =
+                    start_recording_app_server(&app.config, ThreadScopedModelListBehavior::Forward)
+                        .await?;
                 let mut tui = crate::tui::test_support::make_test_tui()?;
 
                 app.start_fresh_session_with_summary_hint(
@@ -248,8 +300,9 @@ fn session_lifecycle_avoids_redundant_subagent_metadata_reads() -> Result<()> {
                     root_timestamp,
                     &root_thread_id.to_string(),
                 );
-                let (mut app_server, requests, proxy) =
-                    start_recording_app_server(&app.config).await?;
+                let (mut app_server, requests, _unsubscribed_thread_ids, proxy) =
+                    start_recording_app_server(&app.config, ThreadScopedModelListBehavior::Forward)
+                        .await?;
                 let root = app_server
                     .resume_thread(
                         app.config.clone(),
@@ -346,4 +399,178 @@ fn session_lifecycle_avoids_redundant_subagent_metadata_reads() -> Result<()> {
         })?
         .join()
         .expect("session lifecycle request test thread")
+}
+
+#[test]
+fn manifest_catalog_failure_keeps_existing_thread_and_config() -> Result<()> {
+    const TEST_STACK_SIZE_BYTES: usize = 8 * 1024 * 1024;
+
+    std::thread::Builder::new()
+        .name("tui-manifest-catalog-failure".to_string())
+        .stack_size(TEST_STACK_SIZE_BYTES)
+        .spawn(|| {
+            let runtime = tokio::runtime::Builder::new_current_thread()
+                .enable_all()
+                .build()?;
+            runtime.block_on(async {
+                let mut app = make_test_app().await;
+                let codex_home = tempdir()?;
+                app.config.codex_home = codex_home.path().to_path_buf().abs();
+                app.config.sqlite_home = codex_home.path().to_path_buf();
+
+                let manifest_server = MockServer::start().await;
+                Mock::given(method("GET"))
+                    .and(path("/v1/codex/provider-manifest"))
+                    .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                        "schema_version": 1,
+                        "models": [{
+                            "id": "venado-only",
+                            "display_name": "Venado only",
+                            "description": "Only advertised by the configured provider manifest",
+                            "context_window": 32_000,
+                            "max_input_tokens": 24_000,
+                            "default_reasoning_effort": "medium",
+                            "supported_reasoning_efforts": ["medium"],
+                            "service_tiers": []
+                        }]
+                    })))
+                    .expect(1..)
+                    .mount(&manifest_server)
+                    .await;
+                let provider = codex_model_provider_info::ModelProviderInfo {
+                    name: "Venado".to_string(),
+                    base_url: Some(format!("{}/v1", manifest_server.uri())),
+                    provider_manifest_path: Some("codex/provider-manifest".to_string()),
+                    experimental_bearer_token: Some("venado-test-token".to_string()),
+                    ..Default::default()
+                };
+                std::fs::write(
+                    codex_home.path().join("config.toml"),
+                    format!(
+                        r#"
+model = "venado-only"
+model_provider = "venado"
+
+[model_providers.venado]
+name = "Venado"
+base_url = "{}/v1"
+experimental_bearer_token = "venado-test-token"
+wire_api = "responses"
+provider_manifest_path = "codex/provider-manifest"
+"#,
+                        manifest_server.uri()
+                    ),
+                )?;
+                app.config.model_provider_id = "venado".to_string();
+                app.config.model_provider = provider.clone();
+                app.config
+                    .model_providers
+                    .insert("venado".to_string(), provider);
+                app.config.model = Some("venado-only".to_string());
+
+                let (mut app_server, requests, unsubscribed_thread_ids, proxy) =
+                    start_recording_app_server(&app.config, ThreadScopedModelListBehavior::Fail)
+                        .await?;
+                let source_thread_id = ThreadId::from_string(
+                    &create_fake_rollout(
+                        codex_home.path(),
+                        "2026-01-01T00-00-00",
+                        "2026-01-01T00:00:00Z",
+                        "Saved user message",
+                        Some("venado"),
+                        /*git_info*/ None,
+                    )
+                    .expect("create source rollout"),
+                )?;
+                let source = app_server
+                    .resume_thread(
+                        app.config.clone(),
+                        source_thread_id,
+                        app.resume_model_settings(),
+                    )
+                    .await?;
+                app.enqueue_primary_thread_session(source.session, source.turns)
+                    .await?;
+                let original_model_catalog = Arc::clone(&app.model_catalog);
+                let original_model_catalog_provenance = app.model_catalog_provenance;
+                requests.lock().expect("request recorder lock").clear();
+
+                let replacement = app_server
+                    .fork_thread(app.config.clone(), source_thread_id)
+                    .await?;
+                let replacement_thread_id = replacement.session.thread_id;
+                app.ensure_thread_channel(replacement_thread_id);
+                app.agent_navigation.upsert(
+                    replacement_thread_id,
+                    /*agent_nickname*/ None,
+                    /*agent_role*/ None,
+                    /*is_closed*/ false,
+                );
+                let mut transition_config = app.config.clone();
+                transition_config.model = Some("should-not-commit".to_string());
+                let mut tui = crate::tui::test_support::make_test_tui()?;
+                let err = app
+                    .replace_chat_widget_with_app_server_thread(
+                        &mut tui,
+                        &mut app_server,
+                        transition_config,
+                        replacement,
+                        ThreadAttachPresentation::SessionLineage,
+                        /*initial_user_message*/ None,
+                    )
+                    .await
+                    .expect_err("thread-scoped model/list failure should abort attachment");
+
+                assert!(
+                    err.to_string().contains("failed to load models for thread"),
+                    "unexpected attachment error: {err}"
+                );
+                assert_eq!(app.chat_widget.thread_id(), Some(source_thread_id));
+                assert_eq!(app.config.model.as_deref(), Some("venado-only"));
+                assert!(Arc::ptr_eq(&app.model_catalog, &original_model_catalog));
+                assert_eq!(
+                    app.model_catalog_provenance,
+                    original_model_catalog_provenance
+                );
+                assert!(
+                    !app.thread_event_channels
+                        .contains_key(&replacement_thread_id),
+                    "failed preflight should discard the replacement channel"
+                );
+                assert!(
+                    app.agent_navigation.get(&replacement_thread_id).is_none(),
+                    "failed preflight should discard replacement navigation state"
+                );
+                let recorded_methods = requests.lock().expect("request recorder lock").clone();
+                assert!(
+                    recorded_methods.iter().any(|method| method == "model/list"),
+                    "replacement should attempt the thread-scoped model catalog"
+                );
+                assert!(
+                    recorded_methods
+                        .iter()
+                        .any(|method| method == "thread/unsubscribe"),
+                    "failed preflight should clean up the unattached replacement"
+                );
+                let unsubscribed_thread_ids = unsubscribed_thread_ids
+                    .lock()
+                    .expect("unsubscribe recorder lock")
+                    .clone();
+                assert!(
+                    unsubscribed_thread_ids.contains(&replacement_thread_id.to_string()),
+                    "failed preflight should unsubscribe the unattached replacement"
+                );
+                assert!(
+                    !unsubscribed_thread_ids.contains(&source_thread_id.to_string()),
+                    "failed preflight must not unsubscribe the current thread"
+                );
+
+                manifest_server.verify().await;
+                app_server.shutdown().await?;
+                proxy.await??;
+                Ok(())
+            })
+        })?
+        .join()
+        .expect("manifest catalog failure test thread")
 }

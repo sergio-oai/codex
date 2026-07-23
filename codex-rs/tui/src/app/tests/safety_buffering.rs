@@ -287,9 +287,11 @@ goals = true
     let mut app_server = Box::pin(crate::start_embedded_app_server_for_picker(&app.config)).await?;
     let started = app_server.start_thread(&app.config).await?;
     let source_thread_id = started.session.thread_id;
+    let transition_config = app.config.clone();
     app.replace_chat_widget_with_app_server_thread(
         &mut tui,
         &mut app_server,
+        transition_config,
         started,
         ThreadAttachPresentation::SessionLineage,
         /*initial_user_message*/ None,
