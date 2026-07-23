@@ -195,6 +195,28 @@ impl ChatWidget {
         self.model_catalog.clone()
     }
 
+    #[cfg(test)]
+    pub(crate) fn model_catalog_provenance(&self) -> ModelCatalogProvenance {
+        self.model_catalog_provenance
+    }
+
+    /// Replace the catalog behind an already-created startup widget.
+    ///
+    /// Initial thread start is asynchronous, so the thread can reveal a
+    /// provider-scoped manifest catalog after the widget has been constructed.
+    /// Keep queued input and other widget state intact while refreshing every
+    /// surface whose behavior depends on the catalog.
+    pub(crate) fn replace_model_catalog(
+        &mut self,
+        model_catalog: Arc<ModelCatalog>,
+        model_catalog_provenance: ModelCatalogProvenance,
+    ) {
+        self.model_catalog = model_catalog;
+        self.model_catalog_provenance = model_catalog_provenance;
+        self.refresh_effective_service_tier();
+        self.refresh_model_dependent_surfaces();
+    }
+
     /// Whether picker behavior may rely on manifest-owned reasoning metadata.
     ///
     /// Unknown provenance only takes the manifest path when the user

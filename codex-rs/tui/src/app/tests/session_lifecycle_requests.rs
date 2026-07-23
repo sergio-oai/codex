@@ -402,6 +402,125 @@ fn session_lifecycle_avoids_redundant_subagent_metadata_reads() -> Result<()> {
 }
 
 #[test]
+fn startup_known_ordinary_keeps_bootstrap_catalog_without_model_list() -> Result<()> {
+    const TEST_STACK_SIZE_BYTES: usize = 8 * 1024 * 1024;
+
+    std::thread::Builder::new()
+        .name("tui-startup-ordinary-catalog".to_string())
+        .stack_size(TEST_STACK_SIZE_BYTES)
+        .spawn(|| {
+            let runtime = tokio::runtime::Builder::new_current_thread()
+                .enable_all()
+                .build()?;
+            runtime.block_on(async {
+                let (mut app, _app_event_rx, _op_rx) = make_test_app_with_channels().await;
+                app.pending_startup_thread_start = true;
+                let original_catalog = Arc::clone(&app.model_catalog);
+                let original_provenance = app.model_catalog_provenance;
+
+                let (mut app_server, requests, _unsubscribed_thread_ids, proxy) =
+                    start_recording_app_server(&app.config, ThreadScopedModelListBehavior::Forward)
+                        .await?;
+                let mut started = app_server.start_thread(&app.config).await?;
+                started.model_provider_uses_manifest = Some(false);
+                requests.lock().expect("request recorder lock").clear();
+
+                app.handle_startup_thread_started(&mut app_server, Ok(started))
+                    .await?;
+
+                assert!(Arc::ptr_eq(&app.model_catalog, &original_catalog));
+                assert_eq!(app.model_catalog_provenance, original_provenance);
+                assert!(
+                    !requests
+                        .lock()
+                        .expect("request recorder lock")
+                        .iter()
+                        .any(|method| method == "model/list"),
+                    "known ordinary startup must not add a thread-scoped model/list request"
+                );
+
+                app_server.shutdown().await?;
+                proxy.await??;
+                Ok(())
+            })
+        })?
+        .join()
+        .expect("startup ordinary catalog test thread")
+}
+
+#[test]
+fn startup_manifest_catalog_failure_does_not_attach() -> Result<()> {
+    const TEST_STACK_SIZE_BYTES: usize = 8 * 1024 * 1024;
+
+    std::thread::Builder::new()
+        .name("tui-startup-manifest-catalog-failure".to_string())
+        .stack_size(TEST_STACK_SIZE_BYTES)
+        .spawn(|| {
+            let runtime = tokio::runtime::Builder::new_current_thread()
+                .enable_all()
+                .build()?;
+            runtime.block_on(async {
+                let (mut app, _app_event_rx, _op_rx) = make_test_app_with_channels().await;
+                app.pending_startup_thread_start = true;
+                app.chat_widget
+                    .set_queue_submissions_until_session_configured(/*queue*/ true);
+                let original_catalog = Arc::clone(&app.model_catalog);
+                let original_provenance = app.model_catalog_provenance;
+
+                let (mut app_server, requests, unsubscribed_thread_ids, proxy) =
+                    start_recording_app_server(&app.config, ThreadScopedModelListBehavior::Fail)
+                        .await?;
+                let mut started = app_server.start_thread(&app.config).await?;
+                let thread_id = started.session.thread_id;
+                started.model_provider_uses_manifest = Some(true);
+                requests.lock().expect("request recorder lock").clear();
+
+                let err = app
+                    .handle_startup_thread_started(&mut app_server, Ok(started))
+                    .await
+                    .expect_err("thread-scoped model/list failure should abort startup attach");
+
+                assert!(
+                    err.to_string().contains("failed to load models for thread"),
+                    "unexpected startup attachment error: {err}"
+                );
+                assert_eq!(app.primary_thread_id, None);
+                assert!(Arc::ptr_eq(&app.model_catalog, &original_catalog));
+                assert_eq!(app.model_catalog_provenance, original_provenance);
+                assert_eq!(
+                    app.chat_widget.model_catalog_provenance(),
+                    original_provenance
+                );
+                let recorded_methods = requests.lock().expect("request recorder lock").clone();
+                assert!(
+                    recorded_methods.iter().any(|method| method == "model/list"),
+                    "startup should attempt the thread-scoped model catalog"
+                );
+                assert!(
+                    recorded_methods
+                        .iter()
+                        .any(|method| method == "thread/unsubscribe"),
+                    "failed startup preflight should clean up the unattached thread"
+                );
+                let unsubscribed_thread_ids = unsubscribed_thread_ids
+                    .lock()
+                    .expect("unsubscribe recorder lock")
+                    .clone();
+                assert!(
+                    unsubscribed_thread_ids.contains(&thread_id.to_string()),
+                    "failed startup preflight should unsubscribe the unattached thread"
+                );
+
+                app_server.shutdown().await?;
+                proxy.await??;
+                Ok(())
+            })
+        })?
+        .join()
+        .expect("startup manifest catalog failure test thread")
+}
+
+#[test]
 fn manifest_catalog_failure_keeps_existing_thread_and_config() -> Result<()> {
     const TEST_STACK_SIZE_BYTES: usize = 8 * 1024 * 1024;
 

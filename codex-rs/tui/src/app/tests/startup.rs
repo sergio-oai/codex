@@ -181,6 +181,69 @@ async fn startup_thread_started_submits_queued_startup_input() {
     }
 }
 
+#[test]
+fn startup_thread_started_refreshes_manifest_catalog_before_attach() -> Result<()> {
+    std::thread::Builder::new()
+        .name("tui-startup-manifest-catalog".to_string())
+        .stack_size(8 * 1024 * 1024)
+        .spawn(|| {
+            let runtime = tokio::runtime::Builder::new_current_thread()
+                .enable_all()
+                .build()?;
+            runtime.block_on(async {
+                let (mut app, _app_event_rx, mut op_rx) = make_test_app_with_channels().await;
+                app.pending_startup_thread_start = true;
+                app.chat_widget
+                    .set_queue_submissions_until_session_configured(/*queue*/ true);
+                app.chat_widget
+                    .apply_external_edit("queued through manifest refresh".to_string());
+                app.chat_widget
+                    .handle_key_event(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+                let original_catalog = Arc::clone(&app.model_catalog);
+
+                let mut app_server = Box::pin(crate::start_embedded_app_server_for_picker(
+                    app.chat_widget.config_ref(),
+                ))
+                .await?;
+                let mut started = app_server.start_thread(&app.config).await?;
+                started.model_provider_uses_manifest = Some(true);
+
+                app.handle_startup_thread_started(&mut app_server, Ok(started))
+                    .await?;
+
+                assert_eq!(
+                    app.model_catalog_provenance,
+                    ModelCatalogProvenance::KnownManifest
+                );
+                assert_eq!(
+                    app.chat_widget.model_catalog_provenance(),
+                    ModelCatalogProvenance::KnownManifest
+                );
+                assert!(
+                    !Arc::ptr_eq(&app.model_catalog, &original_catalog),
+                    "manifest startup should load a thread-scoped catalog"
+                );
+                assert!(
+                    Arc::ptr_eq(&app.chat_widget.model_catalog(), &app.model_catalog),
+                    "startup widget should receive the thread-scoped catalog without replacement"
+                );
+                match next_user_turn_op(&mut op_rx) {
+                    Op::UserTurn { items, .. } => assert_eq!(
+                        items,
+                        vec![UserInput::Text {
+                            text: "queued through manifest refresh".to_string(),
+                            text_elements: Vec::new(),
+                        }]
+                    ),
+                    other => panic!("expected queued startup input submission, got {other:?}"),
+                }
+                Ok(())
+            })
+        })?
+        .join()
+        .expect("startup manifest catalog test thread")
+}
+
 #[tokio::test]
 async fn startup_thread_start_failure_returns_error() {
     let (mut app, _app_event_rx, _op_rx) = make_test_app_with_channels().await;

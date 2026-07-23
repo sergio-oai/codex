@@ -5327,6 +5327,82 @@ async fn provider_manifest_rejects_unsupported_settings_transitions() {
 }
 
 #[tokio::test]
+async fn provider_manifest_model_switch_keeps_inherited_unsupported_service_tier() {
+    let (mut session, _turn_context) = make_session_and_context().await;
+    let current_model = {
+        let state = session.state.lock().await;
+        state
+            .session_configuration
+            .collaboration_mode
+            .model()
+            .to_string()
+    };
+    let mut config = (*session.get_config().await).clone();
+    config.model_provider.provider_manifest_path = Some("codex/provider-manifest".to_string());
+
+    let mut current_model_info = construct_model_info_offline_for_tests(
+        current_model.as_str(),
+        &config.to_models_manager_config(),
+    );
+    current_model_info.default_reasoning_level = Some(ReasoningEffortConfig::Medium);
+    current_model_info.supported_reasoning_levels = vec![ReasoningEffortPreset {
+        effort: ReasoningEffortConfig::Medium,
+        description: "medium".to_string(),
+    }];
+    current_model_info.service_tiers = vec![ModelServiceTier {
+        id: "custom-tier".to_string(),
+        name: "tier-custom".to_string(),
+        description: "custom manifest tier".to_string(),
+    }];
+    let mut next_model_info = construct_model_info_offline_for_tests(
+        "next-manifest-model",
+        &config.to_models_manager_config(),
+    );
+    next_model_info.default_reasoning_level = Some(ReasoningEffortConfig::Low);
+    next_model_info.supported_reasoning_levels = vec![ReasoningEffortPreset {
+        effort: ReasoningEffortConfig::Low,
+        description: "low".to_string(),
+    }];
+    next_model_info.service_tiers = Vec::new();
+    session.services.models_manager = Arc::new(StaticModelsManager::new(
+        /*auth_manager*/ None,
+        ModelsResponse {
+            models: vec![current_model_info, next_model_info],
+        },
+    ));
+    {
+        let mut state = session.state.lock().await;
+        state.session_configuration.provider = config.model_provider.clone();
+        state.session_configuration.original_config_do_not_use = Arc::new(config);
+        state.session_configuration.service_tier = Some("custom-tier".to_string());
+    }
+
+    let updates = SessionSettingsUpdate {
+        collaboration_mode: Some(CollaborationMode {
+            mode: ModeKind::Default,
+            settings: Settings {
+                model: "next-manifest-model".to_string(),
+                reasoning_effort: Some(ReasoningEffortConfig::Low),
+                developer_instructions: None,
+            },
+        }),
+        ..Default::default()
+    };
+
+    assert!(
+        session.preview_settings(&updates).await.is_ok(),
+        "an inherited tier must not block switching to a manifest model that omits it"
+    );
+    session
+        .update_settings(updates)
+        .await
+        .expect("model switch should keep the inherited tier preference");
+    let snapshot = session.thread_config_snapshot().await;
+    assert_eq!(snapshot.model, "next-manifest-model");
+    assert_eq!(snapshot.service_tier.as_deref(), Some("custom-tier"));
+}
+
+#[tokio::test]
 async fn ordinary_providers_keep_existing_model_override_behavior() {
     let (session, _turn_context) = make_session_and_context().await;
     let updates = SessionSettingsUpdate {

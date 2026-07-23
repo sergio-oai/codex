@@ -1644,7 +1644,12 @@ impl Session {
                 requirement_source: codex_config::RequirementSource::Unknown,
             });
         }
-        if let Some(service_tier) = requested_service_tier.as_deref()
+        // A model switch inherits the existing tier preference. Keep that
+        // preference so it can resume on a compatible model; request
+        // construction already omits it for models that do not advertise it.
+        // Only reject a tier when this update explicitly selects one.
+        if needs_service_tier_validation
+            && let Some(service_tier) = requested_service_tier.as_deref()
             && service_tier != SERVICE_TIER_DEFAULT_REQUEST_VALUE
             && !available_model
                 .service_tiers

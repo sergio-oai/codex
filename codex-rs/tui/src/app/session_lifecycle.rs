@@ -644,10 +644,41 @@ impl App {
             .set_queue_submissions_until_session_configured(/*queue*/ false);
         match result {
             Ok(started) => {
-                if started.blocks_direct_input {
-                    self.mark_primary_thread_parent_owned(started.session.thread_id);
+                let thread_id = started.session.thread_id;
+                let target_provider_id = started.session.model_provider_id.clone();
+                let prepared_catalog = match self
+                    .prepare_model_catalog_for_thread(
+                        app_server,
+                        &self.config,
+                        thread_id,
+                        Some(target_provider_id.as_str()),
+                        started.model_provider_uses_manifest,
+                    )
+                    .await
+                {
+                    Ok(prepared_catalog) => prepared_catalog,
+                    Err(err) => {
+                        self.cleanup_unattached_thread(
+                            app_server,
+                            thread_id,
+                            UnattachedThreadCleanupScope::RemoveNavigation,
+                        )
+                        .await;
+                        return Err(err);
+                    }
+                };
+                if let Some(prepared_catalog) = prepared_catalog {
+                    self.model_catalog = prepared_catalog.catalog;
+                    self.model_catalog_provenance = prepared_catalog.provenance;
+                    self.chat_widget.replace_model_catalog(
+                        Arc::clone(&self.model_catalog),
+                        self.model_catalog_provenance,
+                    );
                 }
-                self.ensure_thread_channel(started.session.thread_id)
+                if started.blocks_direct_input {
+                    self.mark_primary_thread_parent_owned(thread_id);
+                }
+                self.ensure_thread_channel(thread_id)
                     .model_provider_uses_manifest = started.model_provider_uses_manifest;
                 self.enqueue_primary_thread_session(started.session, started.turns)
                     .await?;
