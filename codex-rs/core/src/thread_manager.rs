@@ -1276,6 +1276,10 @@ impl ThreadManager {
 }
 
 impl ThreadManagerState {
+    pub(crate) fn auth_manager(&self) -> Arc<AuthManager> {
+        Arc::clone(&self.auth_manager)
+    }
+
     pub(crate) fn agent_graph_store(&self) -> Option<Arc<dyn AgentGraphStore>> {
         self.agent_graph_store.clone()
     }
@@ -1598,10 +1602,12 @@ impl ThreadManagerState {
     pub(crate) async fn spawn_new_thread(
         &self,
         config: Config,
+        auth_manager: Arc<AuthManager>,
         agent_control: AgentControl,
     ) -> CodexResult<NewThread> {
         Box::pin(self.spawn_new_thread_with_source(
             config,
+            auth_manager,
             agent_control,
             self.session_source.clone(),
             /*history_mode*/ None,
@@ -1620,6 +1626,7 @@ impl ThreadManagerState {
     pub(crate) async fn spawn_new_thread_with_source(
         &self,
         config: Config,
+        auth_manager: Arc<AuthManager>,
         agent_control: AgentControl,
         session_source: SessionSource,
         history_mode: Option<ThreadHistoryMode>,
@@ -1643,7 +1650,7 @@ impl ThreadManagerState {
             InitialHistory::New,
             history_mode,
             /*allow_provider_model_fallback*/ false,
-            Arc::clone(&self.auth_manager),
+            auth_manager,
             agent_control,
             session_source,
             parent_thread_id,
@@ -1709,6 +1716,7 @@ impl ThreadManagerState {
     pub(crate) async fn fork_thread_with_source(
         &self,
         config: Config,
+        auth_manager: Arc<AuthManager>,
         initial_history: InitialHistory,
         history_mode: Option<ThreadHistoryMode>,
         agent_control: AgentControl,
@@ -1733,7 +1741,7 @@ impl ThreadManagerState {
             initial_history,
             history_mode,
             /*allow_provider_model_fallback*/ false,
-            Arc::clone(&self.auth_manager),
+            auth_manager,
             agent_control,
             session_source,
             parent_thread_id,

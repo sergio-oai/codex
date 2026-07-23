@@ -245,7 +245,7 @@ pub(crate) fn apply_spawn_agent_runtime_overrides(
 }
 
 pub(crate) async fn apply_requested_spawn_agent_model_overrides(
-    session: &Session,
+    models_manager: &SharedModelsManager,
     turn: &TurnContext,
     config: &mut Config,
     requested_model: Option<&str>,
@@ -265,7 +265,6 @@ pub(crate) async fn apply_requested_spawn_agent_model_overrides(
         return Ok(());
     }
 
-    let models_manager = models_manager_for_spawn_config(session, turn, config).await?;
     let refresh_strategy = if config.model_provider.provider_manifest_path.is_some() {
         RefreshStrategy::OnlineIfUncached
     } else {
@@ -339,8 +338,7 @@ pub(crate) async fn apply_requested_spawn_agent_model_overrides(
 }
 
 pub(crate) async fn apply_spawn_agent_service_tier(
-    session: &Session,
-    turn: &TurnContext,
+    models_manager: &SharedModelsManager,
     config: &mut Config,
     parent_service_tier: Option<&str>,
     requested_service_tier: Option<&str>,
@@ -360,7 +358,6 @@ pub(crate) async fn apply_spawn_agent_service_tier(
             "spawn_agent could not resolve the child model for service tier validation".to_string(),
         )
     })?;
-    let models_manager = models_manager_for_spawn_config(session, turn, config).await?;
     if config.model_provider.provider_manifest_path.is_some() {
         let _ = models_manager
             .list_models(
@@ -411,8 +408,8 @@ pub(crate) async fn apply_spawn_agent_role(
 }
 
 pub(crate) async fn validate_spawn_agent_role_settings(
-    session: &Session,
     turn: &TurnContext,
+    models_manager: &SharedModelsManager,
     config: &Config,
     role_locks: AgentRoleModelLocks,
 ) -> Result<(), FunctionCallError> {
@@ -427,7 +424,6 @@ pub(crate) async fn validate_spawn_agent_role_settings(
         return Ok(());
     }
 
-    let models_manager = models_manager_for_spawn_config(session, turn, config).await?;
     if uses_provider_manifest {
         let available_models = models_manager
             .list_models(
@@ -472,7 +468,7 @@ pub(crate) async fn validate_spawn_agent_role_settings(
     )
 }
 
-async fn models_manager_for_spawn_config(
+pub(crate) async fn models_manager_for_spawn_config(
     session: &Session,
     turn: &TurnContext,
     config: &Config,

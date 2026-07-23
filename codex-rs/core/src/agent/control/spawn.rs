@@ -370,6 +370,11 @@ impl AgentControl {
         options: SpawnAgentOptions,
     ) -> CodexResult<LiveAgent> {
         let state = self.upgrade()?;
+        let child_auth_manager = options
+            .auth_manager
+            .as_ref()
+            .map(Arc::clone)
+            .unwrap_or_else(|| state.auth_manager());
         let multi_agent_version = state
             .effective_multi_agent_version_for_spawn(
                 &InitialHistory::New,
@@ -438,6 +443,7 @@ impl AgentControl {
                 Box::pin(self.spawn_forked_thread(
                     &state,
                     config,
+                    Arc::clone(&child_auth_manager),
                     session_source,
                     &options,
                     inheritance,
@@ -459,6 +465,7 @@ impl AgentControl {
                 };
                 Box::pin(state.spawn_new_thread_with_source(
                     config.clone(),
+                    Arc::clone(&child_auth_manager),
                     self.clone(),
                     session_source,
                     history_mode,
@@ -472,7 +479,14 @@ impl AgentControl {
                 ))
                 .await?
             }
-            (None, _, _) => Box::pin(state.spawn_new_thread(config.clone(), self.clone())).await?,
+            (None, _, _) => {
+                Box::pin(state.spawn_new_thread(
+                    config.clone(),
+                    Arc::clone(&child_auth_manager),
+                    self.clone(),
+                ))
+                .await?
+            }
         };
         agent_metadata.agent_id = Some(new_thread.thread_id);
         reservation.commit(agent_metadata.clone());
@@ -565,6 +579,7 @@ impl AgentControl {
         &self,
         state: &Arc<ThreadManagerState>,
         config: Config,
+        auth_manager: Arc<AuthManager>,
         session_source: SessionSource,
         options: &SpawnAgentOptions,
         inheritance: SpawnAgentThreadInheritance,
@@ -698,6 +713,7 @@ impl AgentControl {
         state
             .fork_thread_with_source(
                 config.clone(),
+                auth_manager,
                 InitialHistory::Forked(forked_rollout_items),
                 destination_history_mode,
                 self.clone(),

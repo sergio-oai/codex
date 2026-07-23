@@ -72,6 +72,11 @@ pub(crate) struct SpawnAgentOptions {
     pub(crate) fork_mode: Option<SpawnAgentForkMode>,
     pub(crate) parent_thread_id: Option<ThreadId>,
     pub(crate) environments: Option<Vec<TurnEnvironmentSelection>>,
+    /// Optional session-scoped auth to inherit when a spawn must keep a
+    /// provider-scoped model manager alive across child startup. Ordinary
+    /// spawns leave this unset to preserve the historical manager-wide auth
+    /// behavior.
+    pub(crate) auth_manager: Option<Arc<AuthManager>>,
 }
 
 #[derive(Clone, Debug)]

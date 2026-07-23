@@ -503,6 +503,7 @@ async fn spawned_child_role_fetches_unloaded_provider_manifest_impl(
                 }]
             }]
         })))
+        .expect(1)
         .mount(&server)
         .await;
 

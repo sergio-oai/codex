@@ -8,6 +8,7 @@ use crate::agent::role::DEFAULT_ROLE_NAME;
 use crate::tools::handlers::multi_agents_spec::SpawnAgentToolOptions;
 use crate::tools::handlers::multi_agents_spec::create_spawn_agent_tool_v1;
 use codex_tools::ToolSpec;
+use std::sync::Arc;
 
 #[derive(Default)]
 pub(crate) struct Handler {
@@ -98,8 +99,14 @@ async fn handle_spawn_agent(
     } else {
         apply_spawn_agent_role(&mut config, role_name).await?
     };
+    // Provider-scoped registries intentionally keep only weak references so
+    // closed threads can release credentials and catalogs. Hold one strong
+    // manager through this spawn so every validation phase and child startup
+    // observe the same manifest catalog.
+    let spawn_models_manager =
+        models_manager_for_spawn_config(&session, turn.as_ref(), &config).await?;
     apply_requested_spawn_agent_model_overrides(
-        &session,
+        &spawn_models_manager,
         turn.as_ref(),
         &mut config,
         args.model.as_deref(),
@@ -108,17 +115,30 @@ async fn handle_spawn_agent(
     )
     .await?;
     if !args.fork_context {
-        validate_spawn_agent_role_settings(&session, turn.as_ref(), &config, role_locks).await?;
+        validate_spawn_agent_role_settings(
+            turn.as_ref(),
+            &spawn_models_manager,
+            &config,
+            role_locks,
+        )
+        .await?;
     }
     apply_spawn_agent_service_tier(
-        &session,
-        turn.as_ref(),
+        &spawn_models_manager,
         &mut config,
         turn.config.service_tier.as_deref(),
         args.service_tier.as_deref(),
     )
     .await?;
     apply_spawn_agent_runtime_overrides(&mut config, turn.as_ref())?;
+    // Manifest managers are keyed by auth identity. Keep the child's startup
+    // on the same session auth as the lease above; ordinary providers retain
+    // their pre-manifest manager-wide auth behavior.
+    let provider_manifest_auth_manager = config
+        .model_provider
+        .provider_manifest_path
+        .is_some()
+        .then(|| Arc::clone(&session.services.auth_manager));
 
     let result = Box::pin(session.services.agent_control.spawn_agent_with_metadata(
         config,
@@ -135,10 +155,12 @@ async fn handle_spawn_agent(
             fork_mode: args.fork_context.then_some(SpawnAgentForkMode::FullHistory),
             parent_thread_id: Some(session.thread_id),
             environments: Some(turn.environments.to_selections()),
+            auth_manager: provider_manifest_auth_manager,
         },
     ))
     .await
     .map_err(collab_spawn_error);
+    drop(spawn_models_manager);
     let (new_thread_id, new_agent_metadata, status) = match &result {
         Ok(spawned_agent) => (
             Some(spawned_agent.thread_id),

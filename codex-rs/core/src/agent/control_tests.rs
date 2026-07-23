@@ -37,6 +37,7 @@ use codex_protocol::protocol::CompactedItem;
 use codex_protocol::protocol::ErrorEvent;
 use codex_protocol::protocol::EventMsg;
 use codex_protocol::protocol::InterAgentCommunication;
+use codex_protocol::protocol::InitialHistory;
 use codex_protocol::protocol::ItemCompletedEvent;
 use codex_protocol::protocol::RolloutItem;
 use codex_protocol::protocol::RolloutLine;
@@ -628,6 +629,58 @@ async fn send_inter_agent_communication_without_turn_queues_message_without_trig
         &history_items,
         &communication
     ));
+}
+
+#[tokio::test]
+async fn spawn_agent_auth_override_keeps_child_on_parent_auth() {
+    let harness = AgentControlHarness::new().await;
+    let parent_auth_manager =
+        AuthManager::from_auth_for_testing(CodexAuth::from_api_key("parent"));
+    let parent = harness
+        .manager
+        .resume_thread_with_history(
+            harness.config.clone(),
+            InitialHistory::New,
+            Arc::clone(&parent_auth_manager),
+            /*parent_trace*/ None,
+            /*supports_openai_form_elicitation*/ false,
+        )
+        .await
+        .expect("start parent with session-scoped auth");
+
+    let spawned_agent = harness
+        .control
+        .spawn_agent_with_metadata(
+            harness.config.clone(),
+            text_input("hello child"),
+            Some(SessionSource::SubAgent(SubAgentSource::ThreadSpawn {
+                parent_thread_id: parent.thread_id,
+                depth: 1,
+                agent_path: None,
+                agent_nickname: None,
+                agent_role: None,
+            })),
+            SpawnAgentOptions {
+                parent_thread_id: Some(parent.thread_id),
+                auth_manager: Some(Arc::clone(&parent_auth_manager)),
+                ..Default::default()
+            },
+        )
+        .await
+        .expect("spawn child with session-scoped auth");
+    let child_thread = harness
+        .manager
+        .get_thread(spawned_agent.thread_id)
+        .await
+        .expect("child thread should exist");
+
+    assert!(
+        Arc::ptr_eq(
+            &child_thread.session.services.auth_manager,
+            &parent_auth_manager,
+        ),
+        "manifest-backed child startup must reuse the parent's auth identity"
+    );
 }
 
 #[tokio::test]

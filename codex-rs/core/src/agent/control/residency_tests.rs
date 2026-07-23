@@ -137,6 +137,7 @@ async fn spawn_v2_subagent(
     state
         .spawn_new_thread_with_source(
             config,
+            state.auth_manager(),
             control.clone(),
             SessionSource::SubAgent(SubAgentSource::Other(label.to_string())),
             /*history_mode*/ None,

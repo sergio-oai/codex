@@ -10,6 +10,7 @@ use crate::tools::handlers::multi_agents_spec::create_spawn_agent_tool_v2;
 use crate::tools::handlers::multi_agents_v2::message_tool::message_content;
 use codex_protocol::AgentPath;
 use codex_tools::ToolSpec;
+use std::sync::Arc;
 
 #[derive(Default)]
 pub(crate) struct Handler {
@@ -72,8 +73,14 @@ async fn handle_spawn_agent(
     } else {
         apply_spawn_agent_role(&mut config, role_name).await?
     };
+    // Provider-scoped registries intentionally keep only weak references so
+    // closed threads can release credentials and catalogs. Hold one strong
+    // manager through this spawn so every validation phase and child startup
+    // observe the same manifest catalog.
+    let spawn_models_manager =
+        models_manager_for_spawn_config(&session, turn.as_ref(), &config).await?;
     apply_requested_spawn_agent_model_overrides(
-        &session,
+        &spawn_models_manager,
         turn.as_ref(),
         &mut config,
         args.model.as_deref(),
@@ -82,17 +89,30 @@ async fn handle_spawn_agent(
     )
     .await?;
     if !is_full_history_fork {
-        validate_spawn_agent_role_settings(&session, turn.as_ref(), &config, role_locks).await?;
+        validate_spawn_agent_role_settings(
+            turn.as_ref(),
+            &spawn_models_manager,
+            &config,
+            role_locks,
+        )
+        .await?;
     }
     apply_spawn_agent_service_tier(
-        &session,
-        turn.as_ref(),
+        &spawn_models_manager,
         &mut config,
         turn.config.service_tier.as_deref(),
         args.service_tier.as_deref(),
     )
     .await?;
     apply_spawn_agent_runtime_overrides(&mut config, turn.as_ref())?;
+    // Manifest managers are keyed by auth identity. Keep the child's startup
+    // on the same session auth as the lease above; ordinary providers retain
+    // their pre-manifest manager-wide auth behavior.
+    let provider_manifest_auth_manager = config
+        .model_provider
+        .provider_manifest_path
+        .is_some()
+        .then(|| Arc::clone(&session.services.auth_manager));
 
     let spawn_source = thread_spawn_source(
         session.thread_id,
@@ -112,7 +132,7 @@ async fn handle_spawn_agent(
         .unwrap_or_else(AgentPath::root);
     let communication = communication_from_tool_message(author, new_agent_path.clone(), message);
     let context = AgentCommunicationContext::new(AgentCommunicationKind::Spawn, session.thread_id);
-    let spawned_agent = Box::pin(
+    let spawned_agent_result = Box::pin(
         session
             .services
             .agent_control
@@ -126,11 +146,14 @@ async fn handle_spawn_agent(
                     fork_mode,
                     parent_thread_id: Some(session.thread_id),
                     environments: Some(turn.environments.to_selections()),
+                    auth_manager: provider_manifest_auth_manager,
                 },
             ),
     )
     .await
-    .map_err(collab_spawn_error)?;
+    .map_err(collab_spawn_error);
+    drop(spawn_models_manager);
+    let spawned_agent = spawned_agent_result?;
     let new_thread_id = spawned_agent.thread_id;
     let agent_snapshot = session
         .services
