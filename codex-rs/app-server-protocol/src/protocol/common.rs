@@ -2800,6 +2800,7 @@ mod tests {
                     },
                     "model": "gpt-5",
                     "modelProvider": "openai",
+                    "modelProviderUsesManifest": null,
                     "serviceTier": null,
                     "cwd": absolute_path_string("tmp"),
                     "runtimeWorkspaceRoots": [],
@@ -3141,6 +3142,7 @@ mod tests {
                 "method": "model/list",
                 "id": 6,
                 "params": {
+                    "threadId": null,
                     "limit": null,
                     "cursor": null,
                     "includeHidden": null

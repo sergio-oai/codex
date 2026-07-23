@@ -4122,13 +4122,16 @@ fn thread_lifecycle_responses_default_missing_optional_fields() {
         serde_json::from_value(response.clone()).expect("thread/fork response");
 
     assert_eq!(start.instruction_sources, Vec::<LegacyAppPathString>::new());
+    assert_eq!(start.model_provider_uses_manifest, None);
     assert_eq!(start.thread.parent_thread_id, None);
     assert_eq!(start.thread.recency_at, None);
     assert_eq!(
         resume.instruction_sources,
         Vec::<LegacyAppPathString>::new()
     );
+    assert_eq!(resume.model_provider_uses_manifest, None);
     assert_eq!(fork.instruction_sources, Vec::<LegacyAppPathString>::new());
+    assert_eq!(fork.model_provider_uses_manifest, None);
     assert_eq!(start.active_permission_profile, None);
     assert_eq!(resume.active_permission_profile, None);
     assert_eq!(resume.initial_turns_page, None);
