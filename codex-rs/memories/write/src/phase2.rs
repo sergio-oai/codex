@@ -17,7 +17,6 @@ use crate::workspace::write_workspace_diff;
 use codex_config::Constrained;
 use codex_core::config::Config;
 use codex_features::Feature;
-use codex_model_provider::ModelProvider;
 use codex_protocol::ThreadId;
 use codex_protocol::models::PermissionProfile;
 use codex_protocol::protocol::AgentStatus;
@@ -83,10 +82,17 @@ pub async fn run(
     }
 
     // 3. Build the locked-down config used by the consolidation agent.
+    let consolidation_model = context
+        .preferred_memory_model(
+            config.as_ref(),
+            config.memories.consolidation_model.as_deref(),
+            context.provider().memory_consolidation_preferred_model(),
+        )
+        .await;
     let Some(agent_config) = agent::get_config(
         config.as_ref(),
         parent_permission_profile,
-        context.provider(),
+        &consolidation_model,
     ) else {
         // If we can't get the config, we can't consolidate.
         tracing::error!("failed to get agent config");
@@ -311,7 +317,7 @@ mod agent {
     pub(super) fn get_config(
         config: &Config,
         parent_permission_profile: PermissionProfile,
-        provider: &dyn ModelProvider,
+        consolidation_model: &str,
     ) -> Option<Config> {
         let root = memory_root(&config.codex_home);
         let mut agent_config = config.clone();
@@ -354,13 +360,7 @@ mod agent {
         }
         .ok()?;
 
-        agent_config.model = Some(
-            config
-                .memories
-                .consolidation_model
-                .clone()
-                .unwrap_or_else(|| provider.memory_consolidation_preferred_model().to_string()),
-        );
+        agent_config.model = Some(consolidation_model.to_string());
         agent_config.model_reasoning_effort = Some(crate::stage_two::REASONING_EFFORT);
 
         Some(agent_config)

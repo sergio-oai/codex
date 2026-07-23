@@ -539,20 +539,15 @@ fn model_catalog_provenance_for_provider(
 
 /// Whether the active TUI catalog must be reloaded from a loaded thread.
 ///
-/// Ordinary local providers historically share the startup catalog, so keep
-/// that no-extra-request behavior when both provider kinds are known and
-/// neither provider opted into manifests. Manifest-backed, unknown, or remote
-/// app-server state cannot safely reuse that process-level catalog.
+/// Ordinary providers historically share the startup catalog, so keep that
+/// no-extra-request behavior when both provider kinds are known and neither
+/// provider opted into manifests. Manifest-backed or unknown provider state
+/// cannot safely reuse that process-level catalog.
 fn should_refresh_thread_model_catalog(
     config: &Config,
-    app_server_state_is_remote: bool,
     current_catalog_provenance: ModelCatalogProvenance,
     target_provider_id: Option<&str>,
 ) -> bool {
-    if app_server_state_is_remote {
-        return true;
-    }
-
     !matches!(
         (
             current_catalog_provenance,
@@ -917,9 +912,6 @@ impl App {
         let mut model_catalog = Arc::new(ModelCatalog::new(available_models.clone()));
         let mut model_catalog_provenance =
             model_catalog_provenance_for_provider(&config, Some(config.model_provider_id.as_str()));
-        // A non-embedded app server can restore provider state that this
-        // process never loaded, so its thread catalogs are always scoped.
-        let app_server_state_is_remote = !app_server.uses_embedded_app_server();
         let feedback_audience = bootstrap.feedback_audience;
         let auth_mode = bootstrap.auth_mode;
         let has_chatgpt_account = bootstrap.has_chatgpt_account;
@@ -1021,7 +1013,6 @@ impl App {
                     .map_err(|err| session_start_error("resume", &target_session, err))?;
                 let should_refresh_catalog = should_refresh_thread_model_catalog(
                     &config,
-                    app_server_state_is_remote,
                     model_catalog_provenance,
                     Some(resumed.session.model_provider_id.as_str()),
                 );
@@ -1077,7 +1068,6 @@ impl App {
                     .map_err(|err| session_start_error("fork", &target_session, err))?;
                 let should_refresh_catalog = should_refresh_thread_model_catalog(
                     &config,
-                    app_server_state_is_remote,
                     model_catalog_provenance,
                     Some(forked.session.model_provider_id.as_str()),
                 );

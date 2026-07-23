@@ -26,8 +26,11 @@ pub async fn supported_models(
         }
         None => {
             thread_manager
-                .list_models(RefreshStrategy::OnlineIfUncached, http_client_factory)
-                .await
+                .list_models_with_refresh_error(
+                    RefreshStrategy::OnlineIfUncached,
+                    http_client_factory,
+                )
+                .await?
         }
     };
     Ok(presets

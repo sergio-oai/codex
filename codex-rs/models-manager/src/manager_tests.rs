@@ -512,6 +512,27 @@ async fn authoritative_manager_preserves_requested_model_when_initial_manifest_f
 }
 
 #[tokio::test]
+async fn authoritative_manager_surfaces_initial_manifest_failure_to_fallible_listing() {
+    let endpoint = FailingAuthoritativeModelsEndpoint::new();
+    let manager =
+        OpenAiModelsManager::new_without_cache(endpoint.clone(), /*auth_manager*/ None);
+
+    let err = manager
+        .list_models_with_refresh_error(
+            RefreshStrategy::OnlineIfUncached,
+            DEFAULT_HTTP_CLIENT_FACTORY,
+        )
+        .await
+        .expect_err("an unavailable initial manifest should not look like an empty catalog");
+
+    assert!(
+        err.to_string().contains("manifest endpoint unavailable"),
+        "unexpected manifest error: {err}"
+    );
+    assert_eq!(endpoint.fetch_count(), 1);
+}
+
+#[tokio::test]
 async fn get_model_info_tracks_fallback_usage() {
     let codex_home = tempdir().expect("temp dir");
     let config = ModelsManagerConfig::default();

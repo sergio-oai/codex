@@ -351,6 +351,66 @@ provider_manifest_path = "codex/provider-manifest"
 }
 
 #[tokio::test]
+async fn list_models_surfaces_initial_provider_manifest_fetch_failure() -> Result<()> {
+    let server = MockServer::start().await;
+    Mock::given(method("GET"))
+        .and(path("/v1/codex/provider-manifest"))
+        .respond_with(ResponseTemplate::new(401))
+        // Startup may make a best-effort refresh before the explicit
+        // model/list call retries through the fallible path.
+        .expect(1..)
+        .mount(&server)
+        .await;
+
+    let codex_home = TempDir::new()?;
+    std::fs::write(
+        codex_home.path().join("config.toml"),
+        format!(
+            r#"
+model_provider = "venado"
+
+[model_providers.venado]
+name = "Venado"
+base_url = "{}/v1"
+experimental_bearer_token = "venado-test-token"
+wire_api = "responses"
+provider_manifest_path = "codex/provider-manifest"
+"#,
+            server.uri()
+        ),
+    )?;
+
+    let mut mcp = TestAppServer::builder()
+        .with_codex_home(codex_home.path())
+        .without_auto_env()
+        .build_initialized()
+        .await?;
+    let request_id = mcp
+        .send_list_models_request(ModelListParams {
+            thread_id: None,
+            limit: None,
+            cursor: None,
+            include_hidden: None,
+        })
+        .await?;
+    let error: JSONRPCError = timeout(
+        DEFAULT_TIMEOUT,
+        mcp.read_stream_until_error_message(RequestId::Integer(request_id)),
+    )
+    .await??;
+
+    assert_eq!(error.id, RequestId::Integer(request_id));
+    assert_eq!(error.error.code, INVALID_REQUEST_ERROR_CODE);
+    assert!(
+        error.error.message.contains("failed to list models"),
+        "unexpected model/list error: {}",
+        error.error.message
+    );
+    server.verify().await;
+    Ok(())
+}
+
+#[tokio::test]
 async fn list_models_can_scope_catalog_to_loaded_thread_provider() -> Result<()> {
     let server = MockServer::start().await;
     Mock::given(method("GET"))

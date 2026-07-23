@@ -1,5 +1,4 @@
 use super::agent;
-use codex_model_provider::create_model_provider;
 use codex_protocol::models::ManagedFileSystemPermissions;
 use codex_protocol::models::PermissionProfile;
 use codex_protocol::permissions::NetworkSandboxPolicy;
@@ -18,11 +17,6 @@ async fn consolidation_uses_canonical_parent_enforcement() -> anyhow::Result<()>
         .with_home(home)
         .build_with_auto_env(&server)
         .await?;
-    let provider = create_model_provider(
-        test.config.model_provider.clone(),
-        Some(test.thread_manager.auth_manager()),
-    );
-
     let root = crate::memory_root(&test.config.codex_home);
     let managed_worker_policy = SandboxPolicy::WorkspaceWrite {
         writable_roots: vec![root.clone()],
@@ -52,9 +46,12 @@ async fn consolidation_uses_canonical_parent_enforcement() -> anyhow::Result<()>
             ),
         ),
     ] {
-        let agent_config =
-            agent::get_config(&test.config, parent_permission_profile, provider.as_ref())
-                .expect("agent config should be created");
+        let agent_config = agent::get_config(
+            &test.config,
+            parent_permission_profile,
+            "consolidation-model",
+        )
+        .expect("agent config should be created");
 
         assert_eq!(
             agent_config.permissions.permission_profile(),

@@ -486,6 +486,59 @@ async fn provider_manifest_model_managers_are_scoped_without_changing_regular_re
 }
 
 #[tokio::test]
+async fn scoped_manifest_registry_does_not_retain_closed_thread_credentials_or_catalogs() {
+    let temp_dir = tempdir().expect("tempdir");
+    let mut config = test_config().await;
+    config.codex_home = temp_dir.path().join("codex-home").abs();
+    config.cwd = config.codex_home.abs();
+    std::fs::create_dir_all(&config.codex_home).expect("create codex home");
+
+    let manager = ThreadManager::with_models_provider_and_home_for_tests(
+        CodexAuth::from_api_key("dummy"),
+        config.model_provider.clone(),
+        config.codex_home.to_path_buf(),
+        Arc::new(codex_exec_server::EnvironmentManager::default_for_tests()),
+    );
+    let mut manifest_config = config.clone();
+    manifest_config.model_provider_id = "venado".to_string();
+    manifest_config.model_provider.name = "Venado".to_string();
+    manifest_config.model_provider.base_url = Some("https://venado.example/v1".to_string());
+    manifest_config.model_provider.provider_manifest_path =
+        Some("codex/provider-manifest".to_string());
+
+    let scoped_auth_manager = AuthManager::from_auth_for_testing(CodexAuth::from_api_key("scoped"));
+    let scoped_manager = manager
+        .state
+        .models_manager_for_config(&manifest_config, Arc::clone(&scoped_auth_manager))
+        .await;
+    let weak_auth_manager = Arc::downgrade(&scoped_auth_manager);
+    let weak_manager = Arc::downgrade(&scoped_manager);
+
+    drop(scoped_manager);
+    drop(scoped_auth_manager);
+
+    assert!(
+        weak_auth_manager.upgrade().is_none(),
+        "registry entries must not retain provider-scoped credentials"
+    );
+    assert!(
+        weak_manager.upgrade().is_none(),
+        "registry entries must not retain provider-scoped catalogs"
+    );
+
+    let replacement_manager = manager
+        .state
+        .models_manager_for_config(&manifest_config, manager.auth_manager())
+        .await;
+    assert_eq!(
+        manager.state.models_manager_registry.read().await.len(),
+        2,
+        "expired scoped entries should be pruned before caching a replacement"
+    );
+    drop(replacement_manager);
+}
+
+#[tokio::test]
 async fn ordinary_manager_selected_from_manifest_startup_does_not_use_shared_disk_cache() {
     let server = MockServer::start().await;
     let models_mock = mount_models_once(&server, ModelsResponse { models: vec![] }).await;

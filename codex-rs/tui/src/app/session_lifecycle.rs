@@ -774,7 +774,6 @@ impl App {
     ) -> Result<()> {
         if !should_refresh_thread_model_catalog(
             &self.config,
-            !app_server.uses_embedded_app_server(),
             self.model_catalog_provenance,
             target_provider_id,
         ) {

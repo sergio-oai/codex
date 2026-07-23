@@ -193,6 +193,28 @@ impl MemoryStartupContext {
         self.provider.as_ref()
     }
 
+    /// Resolves a memory worker model without assuming that an authoritative
+    /// custom-provider manifest contains Codex's private OpenAI helper models.
+    ///
+    /// Explicit memory model configuration always wins. Manifest-backed
+    /// providers otherwise reuse the already-selected thread model, which was
+    /// validated against that provider's authoritative catalog at thread
+    /// startup. Ordinary providers retain their historical provider default.
+    pub(crate) async fn preferred_memory_model(
+        &self,
+        config: &Config,
+        configured_model: Option<&str>,
+        provider_default: &str,
+    ) -> String {
+        if let Some(configured_model) = configured_model {
+            return configured_model.to_string();
+        }
+        if config.model_provider.provider_manifest_path.is_some() {
+            return self.thread.config_snapshot().await.model;
+        }
+        provider_default.to_string()
+    }
+
     pub(crate) fn counter(&self, name: &str, inc: i64, tags: &[(&str, &str)]) {
         self.session_telemetry.counter(name, inc, tags);
     }

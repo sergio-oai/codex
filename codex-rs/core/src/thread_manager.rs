@@ -41,6 +41,7 @@ use codex_login::default_client::originator;
 use codex_model_provider::create_model_provider;
 use codex_model_provider_info::ModelProviderInfo;
 use codex_model_provider_info::OPENAI_PROVIDER_ID;
+use codex_models_manager::manager::ModelsManager;
 use codex_models_manager::manager::RefreshStrategy;
 use codex_models_manager::manager::SharedModelsManager;
 use codex_protocol::ThreadId;
@@ -85,6 +86,7 @@ use std::collections::HashMap;
 use std::collections::HashSet;
 use std::path::PathBuf;
 use std::sync::Arc;
+use std::sync::Weak;
 use std::sync::atomic::AtomicBool;
 use std::sync::atomic::Ordering;
 use std::time::Duration;
@@ -297,37 +299,82 @@ pub(crate) struct ThreadManagerState {
 /// with an authoritative manifest; this registry scopes manifest-backed
 /// managers and the ordinary managers needed when switching away from one.
 struct ModelsManagerEntry {
-    model_provider: ModelProviderInfo,
-    model_catalog: Option<ModelsResponse>,
-    codex_home: AbsolutePathBuf,
+    // Keep only a stable digest of the provider-scoped inputs. The provider
+    // config can contain bearer tokens or command-backed auth, and the
+    // catalog can be large; retaining either in a stale weak entry would keep
+    // closed-thread credentials or catalogs alive until a later lookup prunes
+    // the registry.
+    registry_key: String,
     // A models manager captures provider-scoped auth when it is built. Keep
-    // auth identity in the cache key so two app-server callers with the same
+    // weak identity in the cache key so two app-server callers with the same
     // provider config cannot reuse one another's credentials or auth-mode
-    // filtering.
-    auth_manager: Arc<AuthManager>,
-    manager: SharedModelsManager,
+    // filtering, while closed threads can release both credentials and their
+    // provider catalog.
+    auth_manager: Weak<AuthManager>,
+    manager: Weak<dyn ModelsManager>,
 }
 
 impl ModelsManagerEntry {
+    fn registry_key(
+        model_provider: &ModelProviderInfo,
+        model_catalog: &Option<ModelsResponse>,
+        codex_home: &AbsolutePathBuf,
+    ) -> String {
+        #[derive(serde::Serialize)]
+        struct RegistryKey<'a> {
+            model_provider: &'a ModelProviderInfo,
+            model_catalog: &'a Option<ModelsResponse>,
+            codex_home: String,
+        }
+
+        let key = RegistryKey {
+            model_provider,
+            model_catalog,
+            codex_home: codex_home.as_path().to_string_lossy().into_owned(),
+        };
+        let value = toml::Value::try_from(key)
+            .expect("provider-scoped models manager key should serialize as TOML");
+        codex_config::version_for_toml(&value)
+    }
+
+    fn registry_key_for_config(config: &Config) -> String {
+        Self::registry_key(
+            &config.model_provider,
+            &config.model_catalog,
+            &config.codex_home,
+        )
+    }
+
     fn from_config(
         config: &Config,
         auth_manager: Arc<AuthManager>,
         manager: SharedModelsManager,
     ) -> Self {
         Self {
-            model_provider: config.model_provider.clone(),
-            model_catalog: config.model_catalog.clone(),
-            codex_home: config.codex_home.clone(),
-            auth_manager,
-            manager,
+            registry_key: Self::registry_key_for_config(config),
+            auth_manager: Arc::downgrade(&auth_manager),
+            manager: Arc::downgrade(&manager),
         }
     }
 
-    fn matches(&self, config: &Config, auth_manager: &Arc<AuthManager>) -> bool {
-        self.model_provider == config.model_provider
-            && self.model_catalog == config.model_catalog
-            && self.codex_home == config.codex_home
-            && Arc::ptr_eq(&self.auth_manager, auth_manager)
+    fn matching_manager(
+        &self,
+        registry_key: &str,
+        auth_manager: &Arc<AuthManager>,
+    ) -> Option<SharedModelsManager> {
+        if self.registry_key != registry_key {
+            return None;
+        }
+
+        let cached_auth_manager = self.auth_manager.upgrade()?;
+        if !Arc::ptr_eq(&cached_auth_manager, auth_manager) {
+            return None;
+        }
+        self.manager.upgrade()
+    }
+
+    fn is_live(&self) -> bool {
+        self.auth_manager.strong_count() > 0 && self.manager.strong_count() > 0
     }
 }
 
@@ -541,11 +588,9 @@ impl ThreadManager {
         let models_manager = create_model_provider(provider.clone(), Some(auth_manager.clone()))
             .models_manager(codex_home, /*config_model_catalog*/ None);
         let models_manager_registry = RwLock::new(vec![ModelsManagerEntry {
-            model_provider: provider,
-            model_catalog: None,
-            codex_home: absolute_codex_home,
-            auth_manager: Arc::clone(&auth_manager),
-            manager: Arc::clone(&models_manager),
+            registry_key: ModelsManagerEntry::registry_key(&provider, &None, &absolute_codex_home),
+            auth_manager: Arc::downgrade(&auth_manager),
+            manager: Arc::downgrade(&models_manager),
         }]);
         Self {
             state: Arc::new(ThreadManagerState {
@@ -654,6 +699,20 @@ impl ThreadManager {
             .await
     }
 
+    /// List the process-level catalog while preserving initial authoritative
+    /// manifest fetch errors for app-server callers that must not mistake a
+    /// provider failure for a real empty catalog.
+    pub async fn list_models_with_refresh_error(
+        &self,
+        refresh_strategy: RefreshStrategy,
+        http_client_factory: codex_http_client::HttpClientFactory,
+    ) -> CodexResult<Vec<ModelPreset>> {
+        self.state
+            .models_manager
+            .list_models_with_refresh_error(refresh_strategy, http_client_factory)
+            .await
+    }
+
     /// List the catalog for a loaded thread's effective provider.
     ///
     /// App-server threads can override their provider independently. Keep the
@@ -674,9 +733,9 @@ impl ThreadManager {
                 Arc::clone(&thread.session.services.auth_manager),
             )
             .await;
-        Ok(models_manager
-            .list_models(refresh_strategy, config.http_client_factory())
-            .await)
+        models_manager
+            .list_models_with_refresh_error(refresh_strategy, config.http_client_factory())
+            .await
     }
 
     pub fn list_collaboration_modes(&self) -> Vec<CollaborationModeMask> {
@@ -1215,16 +1274,17 @@ impl ThreadManagerState {
         if !target_uses_manifest && !self.startup_provider_uses_manifest {
             return Arc::clone(&self.models_manager);
         }
+        let registry_key = ModelsManagerEntry::registry_key_for_config(config);
 
-        if let Some(manager) = self
-            .models_manager_registry
-            .read()
-            .await
-            .iter()
-            .find(|entry| entry.matches(config, &auth_manager))
-            .map(|entry| Arc::clone(&entry.manager))
         {
-            return manager;
+            let mut registry = self.models_manager_registry.write().await;
+            registry.retain(ModelsManagerEntry::is_live);
+            if let Some(manager) = registry
+                .iter()
+                .find_map(|entry| entry.matching_manager(&registry_key, &auth_manager))
+            {
+                return manager;
+            }
         }
 
         // Build outside the write lock: provider construction is local today,
@@ -1242,11 +1302,12 @@ impl ThreadManagerState {
         );
         let manager = provider.models_manager_without_cache(config.model_catalog.clone());
         let mut registry = self.models_manager_registry.write().await;
+        registry.retain(ModelsManagerEntry::is_live);
         if let Some(existing) = registry
             .iter()
-            .find(|entry| entry.matches(config, &auth_manager))
+            .find_map(|entry| entry.matching_manager(&registry_key, &auth_manager))
         {
-            return Arc::clone(&existing.manager);
+            return existing;
         }
         registry.push(ModelsManagerEntry::from_config(
             config,

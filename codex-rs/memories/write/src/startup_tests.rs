@@ -474,6 +474,43 @@ async fn memories_startup_phase2_explicit_model_override_drives_request_model() 
     Ok(())
 }
 
+#[tokio::test]
+async fn manifest_memory_defaults_reuse_the_active_thread_model() -> anyhow::Result<()> {
+    let server = start_mock_server().await;
+    let home = Arc::new(TempDir::new()?);
+    let test = build_test_codex_with_memories_config(&server, home, startup_test_memories_config())
+        .await?;
+    let provider = Arc::new(MockMemoryModelProvider::new(
+        test.config.model_provider.clone(),
+        Some(test.thread_manager.auth_manager()),
+    ));
+    let (context, config) = memory_startup_context_with_provider(&test, provider).await;
+    let mut manifest_config = config.as_ref().clone();
+    manifest_config.model_provider.provider_manifest_path =
+        Some("codex/provider-manifest".to_string());
+    let active_model = test.codex.config_snapshot().await.model;
+
+    assert_eq!(
+        context
+            .preferred_memory_model(&manifest_config, None, MOCK_PROVIDER_PHASE_ONE_MODEL,)
+            .await,
+        active_model
+    );
+    assert_eq!(
+        context
+            .preferred_memory_model(
+                &manifest_config,
+                Some("explicit-memory-model"),
+                MOCK_PROVIDER_PHASE_TWO_MODEL,
+            )
+            .await,
+        "explicit-memory-model"
+    );
+
+    shutdown_test_codex(&test).await?;
+    Ok(())
+}
+
 async fn run_memory_phase_one_model_request_test(
     server: &wiremock::MockServer,
     home: Arc<TempDir>,

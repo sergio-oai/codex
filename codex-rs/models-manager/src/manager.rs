@@ -116,6 +116,25 @@ pub trait ModelsManager: fmt::Debug + Send + Sync {
         )
     }
 
+    /// List available models while surfacing an initial authoritative-catalog
+    /// refresh failure to callers that must distinguish provider failure from
+    /// a real empty catalog.
+    ///
+    /// Existing process-level callers keep `list_models()`'s historical
+    /// best-effort behavior. Thread-scoped app-server model/list uses this
+    /// fallible path for opt-in provider manifests.
+    fn list_models_with_refresh_error(
+        &self,
+        refresh_strategy: RefreshStrategy,
+        http_client_factory: HttpClientFactory,
+    ) -> ModelsManagerFuture<'_, CoreResult<Vec<ModelPreset>>> {
+        Box::pin(async move {
+            Ok(self
+                .list_models(refresh_strategy, http_client_factory)
+                .await)
+        })
+    }
+
     /// Return the active raw model catalog, refreshing according to the specified strategy.
     fn raw_model_catalog(
         &self,
@@ -363,6 +382,25 @@ impl ModelsManager for OpenAiModelsManager {
         ))
     }
 
+    fn list_models_with_refresh_error(
+        &self,
+        refresh_strategy: RefreshStrategy,
+        http_client_factory: HttpClientFactory,
+    ) -> ModelsManagerFuture<'_, CoreResult<Vec<ModelPreset>>> {
+        Box::pin(
+            async move {
+                let catalog = self
+                    .raw_model_catalog_with_refresh_error(refresh_strategy, http_client_factory)
+                    .await?;
+                Ok(self.build_available_models(catalog.models))
+            }
+            .instrument(tracing::info_span!(
+                "list_models_with_refresh_error",
+                refresh_strategy = %refresh_strategy
+            )),
+        )
+    }
+
     fn get_remote_models(&self) -> ModelsManagerFuture<'_, Vec<ModelInfo>> {
         Box::pin(async move { self.remote_models.read().await.clone() })
     }
@@ -393,19 +431,43 @@ impl ModelsManager for OpenAiModelsManager {
 }
 
 impl OpenAiModelsManager {
+    async fn raw_model_catalog_with_refresh_error(
+        &self,
+        refresh_strategy: RefreshStrategy,
+        http_client_factory: HttpClientFactory,
+    ) -> CoreResult<ModelsResponse> {
+        if let Err(err) = self
+            .refresh_available_models(refresh_strategy, &http_client_factory)
+            .await
+        {
+            if self.endpoint_client.catalog_policy() == ModelCatalogPolicy::AuthoritativeRemote
+                && self.get_remote_models().await.is_empty()
+            {
+                return Err(err);
+            }
+            error!("failed to refresh available models: {err}");
+        }
+        Ok(ModelsResponse {
+            models: self.get_remote_models().await,
+        })
+    }
+
     async fn raw_model_catalog(
         &self,
         refresh_strategy: RefreshStrategy,
         http_client_factory: HttpClientFactory,
     ) -> ModelsResponse {
-        if let Err(err) = self
-            .refresh_available_models(refresh_strategy, &http_client_factory)
+        match self
+            .raw_model_catalog_with_refresh_error(refresh_strategy, http_client_factory)
             .await
         {
-            error!("failed to refresh available models: {err}");
-        }
-        ModelsResponse {
-            models: self.get_remote_models().await,
+            Ok(catalog) => catalog,
+            Err(err) => {
+                error!("failed to refresh available models: {err}");
+                ModelsResponse {
+                    models: self.get_remote_models().await,
+                }
+            }
         }
     }
 

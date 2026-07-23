@@ -45,25 +45,14 @@ async fn thread_catalog_refresh_preserves_ordinary_local_behavior() {
     assert!(
         !should_refresh_thread_model_catalog(
             &config,
-            /*app_server_state_is_remote*/ false,
             ModelCatalogProvenance::KnownOrdinary,
             Some(ordinary_provider_id.as_str()),
         ),
-        "known ordinary local providers keep the startup-only model listing path"
+        "known ordinary providers keep the startup-only model listing path"
     );
     assert!(
         should_refresh_thread_model_catalog(
             &config,
-            /*app_server_state_is_remote*/ true,
-            ModelCatalogProvenance::KnownOrdinary,
-            Some(ordinary_provider_id.as_str()),
-        ),
-        "non-embedded app-server state is always scoped"
-    );
-    assert!(
-        should_refresh_thread_model_catalog(
-            &config,
-            /*app_server_state_is_remote*/ false,
             ModelCatalogProvenance::KnownOrdinary,
             Some("restored-provider"),
         ),
@@ -72,7 +61,6 @@ async fn thread_catalog_refresh_preserves_ordinary_local_behavior() {
     assert!(
         should_refresh_thread_model_catalog(
             &config,
-            /*app_server_state_is_remote*/ false,
             ModelCatalogProvenance::Unknown,
             Some(ordinary_provider_id.as_str()),
         ),
@@ -88,7 +76,6 @@ async fn thread_catalog_refresh_preserves_ordinary_local_behavior() {
     assert!(
         should_refresh_thread_model_catalog(
             &manifest_config,
-            /*app_server_state_is_remote*/ false,
             ModelCatalogProvenance::KnownOrdinary,
             Some("manifest"),
         ),
@@ -97,7 +84,6 @@ async fn thread_catalog_refresh_preserves_ordinary_local_behavior() {
     assert!(
         should_refresh_thread_model_catalog(
             &config,
-            /*app_server_state_is_remote*/ false,
             ModelCatalogProvenance::KnownManifest,
             Some(ordinary_provider_id.as_str()),
         ),
