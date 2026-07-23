@@ -1,0 +1,15 @@
+---
+source: tui/src/chatwidget/tests/slash_commands.rs
+expression: popup
+---
+› /
+
+  /model          choose what model and reasoning effort to use
+  /ide            include current selection, open files, and other context from
+                  your IDE
+  /permissions    choose what Codex is allowed to do
+  /keymap         remap TUI shortcuts
+  /vim            toggle Vim mode for the composer
+  /experimental   toggle experimental features
+  /approve        approve one retry of a recent auto-review denial
+  /memories       configure memory use and generation

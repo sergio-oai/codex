@@ -144,6 +144,7 @@ async fn service_tier_commands_lowercase_catalog_names() {
 #[tokio::test]
 async fn model_without_service_tiers_hides_fast_controls() {
     let (mut chat, _rx, _op_rx) = make_chatwidget_manual(Some("gpt-5.4")).await;
+    chat.model_catalog_provenance = ModelCatalogProvenance::KnownManifest;
     let mut preset = get_available_model(&chat, "gpt-5.4");
     preset.additional_speed_tiers.clear();
     preset.service_tiers.clear();
@@ -175,6 +176,11 @@ async fn model_without_service_tiers_hides_fast_controls() {
             .all(|command| command.command() != "fast"),
         "the slash-command popup should not advertise /fast"
     );
+
+    chat.bottom_pane
+        .set_composer_text("/".to_string(), Vec::new(), Vec::new());
+    let popup = render_bottom_popup(&chat, /*width*/ 80);
+    assert_chatwidget_snapshot!("manifest_model_without_service_tiers_slash_popup", popup);
 }
 
 #[tokio::test]

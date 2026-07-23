@@ -3321,6 +3321,8 @@ async fn manifest_model_without_reasoning_efforts_selects_without_override() {
     while rx.try_recv().is_ok() {}
 
     chat.open_all_models_popup(vec![preset]);
+    let popup = render_bottom_popup(&chat, /*width*/ 80);
+    assert_chatwidget_snapshot!("manifest_model_without_reasoning_picker", popup);
     chat.handle_key_event(KeyEvent::from(KeyCode::Enter));
 
     let mut selected_model = None;
