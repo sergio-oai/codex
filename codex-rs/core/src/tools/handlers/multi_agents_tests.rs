@@ -1,6 +1,7 @@
 use super::*;
 use crate::StartThreadOptions;
 use crate::ThreadManager;
+use crate::agent::role::AgentRoleModelLocks;
 use crate::config::AgentRoleConfig;
 use crate::config::DEFAULT_AGENT_MAX_DEPTH;
 use crate::function_tool::FunctionCallError;
@@ -249,6 +250,74 @@ async fn spawn_agent_rejects_when_message_and_items_are_both_set() {
             "Provide either message or items, but not both".to_string()
         )
     );
+}
+
+#[tokio::test]
+async fn locked_ordinary_role_still_rejects_invalid_requested_model() {
+    let (session, turn) = make_session_and_context().await;
+    let mut role_config = turn.config.as_ref().clone();
+    let err = apply_legacy_ordinary_spawn_agent_model_overrides(
+        &session.services.models_manager,
+        &turn,
+        turn.config.as_ref(),
+        &mut role_config,
+        Some("not-a-real-model"),
+        None,
+        AgentRoleModelLocks {
+            model: true,
+            reasoning_effort: false,
+        },
+    )
+    .await
+    .expect_err("ordinary role lock must not hide invalid requested model");
+
+    assert!(matches!(err, FunctionCallError::RespondToModel(_)));
+}
+
+#[tokio::test]
+async fn locked_ordinary_role_still_rejects_invalid_requested_reasoning() {
+    let (session, turn) = make_session_and_context().await;
+    let mut role_config = turn.config.as_ref().clone();
+    let err = apply_legacy_ordinary_spawn_agent_model_overrides(
+        &session.services.models_manager,
+        &turn,
+        turn.config.as_ref(),
+        &mut role_config,
+        None,
+        Some(ReasoningEffort::Custom("not-supported".to_string())),
+        AgentRoleModelLocks {
+            model: false,
+            reasoning_effort: true,
+        },
+    )
+    .await
+    .expect_err("ordinary role lock must not hide invalid requested reasoning");
+
+    assert!(matches!(err, FunctionCallError::RespondToModel(_)));
+}
+
+#[tokio::test]
+async fn ordinary_role_still_rejects_invalid_role_reasoning() {
+    let (session, turn) = make_session_and_context().await;
+    let mut role_config = turn.config.as_ref().clone();
+    role_config.model = Some(turn.model_info.slug.clone());
+    role_config.model_reasoning_effort = Some(ReasoningEffort::Custom("not-supported".to_string()));
+    let err = apply_legacy_ordinary_spawn_agent_model_overrides(
+        &session.services.models_manager,
+        &turn,
+        turn.config.as_ref(),
+        &mut role_config,
+        None,
+        None,
+        AgentRoleModelLocks {
+            model: true,
+            reasoning_effort: true,
+        },
+    )
+    .await
+    .expect_err("ordinary role reasoning must keep its legacy validation");
+
+    assert!(matches!(err, FunctionCallError::RespondToModel(_)));
 }
 
 #[tokio::test]

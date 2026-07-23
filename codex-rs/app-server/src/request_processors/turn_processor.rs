@@ -1283,18 +1283,25 @@ impl TurnRequestProcessor {
         // AgentRunner::start still delegates to spawn_subagent, which forks from the parent's
         // full history. Paginated threads only allow bounded model-context reads, so keep this
         // closed until detached review has a bounded fork path.
+        let parent_snapshot = parent_thread.config_snapshot().await;
         if matches!(
-            parent_thread.config_snapshot().await.history_mode,
+            parent_snapshot.history_mode,
             codex_protocol::protocol::ThreadHistoryMode::Paginated
         ) {
             return Err(invalid_request(
                 "paginated threads do not support detached review",
             ));
         }
-        let mut config = self.config.as_ref().clone();
+        // Detached review forks model-visible parent history. Always derive
+        // the child from that parent's effective runtime config so provider,
+        // catalog, model, cwd, and reasoning settings cannot silently fall
+        // back to the app-server startup config.
+        let mut config = parent_thread.effective_config().await.as_ref().clone();
         if let Some(review_model) = &config.review_model {
             config.model = Some(review_model.clone());
         }
+        let fallback_provider = config.model_provider_id.clone();
+        let fallback_cwd = config.cwd.clone();
 
         let AgentRun {
             thread_id,
@@ -1313,7 +1320,6 @@ impl TurnRequestProcessor {
             .await
             .map_err(|err| internal_error(format!("failed to start detached review: {err}")))?;
 
-        let fallback_provider = self.config.model_provider_id.as_str();
         let stored_thread = match review_thread
             .read_thread(
                 /*include_archived*/ true, /*include_history*/ false,
@@ -1321,8 +1327,11 @@ impl TurnRequestProcessor {
             .await
         {
             Ok(stored_thread) => {
-                let (thread, _) =
-                    thread_from_stored_thread(stored_thread, fallback_provider, &self.config.cwd);
+                let (thread, _) = thread_from_stored_thread(
+                    stored_thread,
+                    fallback_provider.as_str(),
+                    &fallback_cwd,
+                );
                 Some(thread)
             }
             Err(err) => {

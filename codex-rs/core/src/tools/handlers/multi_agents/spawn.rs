@@ -94,6 +94,7 @@ async fn handle_spawn_agent(
     if args.fork_context {
         reject_full_fork_agent_type_override(role_name)?;
     }
+    let pre_role_config = config.clone();
     let role_locks = if args.fork_context {
         Default::default()
     } else {
@@ -105,21 +106,41 @@ async fn handle_spawn_agent(
     // observe the same manifest catalog.
     let spawn_models_manager =
         models_manager_for_spawn_config(&session, turn.as_ref(), &config).await?;
-    apply_requested_spawn_agent_model_overrides(
+    let requires_manifest_scoped_handling = requires_manifest_scoped_spawn_handling(
+        turn.config.as_ref(),
+        &config,
+        &session.services.models_manager,
         &spawn_models_manager,
-        turn.as_ref(),
-        &mut config,
-        args.model.as_deref(),
-        args.reasoning_effort.clone(),
-        role_locks,
-    )
-    .await?;
+    );
+    if requires_manifest_scoped_handling {
+        apply_requested_spawn_agent_model_overrides(
+            &spawn_models_manager,
+            turn.as_ref(),
+            &mut config,
+            args.model.as_deref(),
+            args.reasoning_effort.clone(),
+            role_locks,
+        )
+        .await?;
+    } else {
+        apply_legacy_ordinary_spawn_agent_model_overrides(
+            &session.services.models_manager,
+            turn.as_ref(),
+            &pre_role_config,
+            &mut config,
+            args.model.as_deref(),
+            args.reasoning_effort.clone(),
+            role_locks,
+        )
+        .await?;
+    }
     if !args.fork_context {
         validate_spawn_agent_role_settings(
             turn.as_ref(),
             &spawn_models_manager,
             &config,
             role_locks,
+            requires_manifest_scoped_handling,
         )
         .await?;
     }
@@ -131,14 +152,11 @@ async fn handle_spawn_agent(
     )
     .await?;
     apply_spawn_agent_runtime_overrides(&mut config, turn.as_ref())?;
-    // Manifest managers are keyed by auth identity. Keep the child's startup
-    // on the same session auth as the lease above; ordinary providers retain
-    // their pre-manifest manager-wide auth behavior.
-    let provider_manifest_auth_manager = config
-        .model_provider
-        .provider_manifest_path
-        .is_some()
-        .then(|| Arc::clone(&session.services.auth_manager));
+    // Carry the live session auth across every hop. For an ordinary root this
+    // is the manager-wide Arc, so regular providers keep their old behavior.
+    // It matters after a manifest-backed parent switches to an ordinary
+    // provider: a grandchild must not fall back to a different auth/catalog.
+    let child_auth_manager = Some(Arc::clone(&session.services.auth_manager));
 
     let result = Box::pin(session.services.agent_control.spawn_agent_with_metadata(
         config,
@@ -155,7 +173,7 @@ async fn handle_spawn_agent(
             fork_mode: args.fork_context.then_some(SpawnAgentForkMode::FullHistory),
             parent_thread_id: Some(session.thread_id),
             environments: Some(turn.environments.to_selections()),
-            auth_manager: provider_manifest_auth_manager,
+            auth_manager: child_auth_manager,
         },
     ))
     .await

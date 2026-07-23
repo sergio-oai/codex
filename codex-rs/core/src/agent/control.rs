@@ -72,10 +72,12 @@ pub(crate) struct SpawnAgentOptions {
     pub(crate) fork_mode: Option<SpawnAgentForkMode>,
     pub(crate) parent_thread_id: Option<ThreadId>,
     pub(crate) environments: Option<Vec<TurnEnvironmentSelection>>,
-    /// Optional session-scoped auth to inherit when a spawn must keep a
-    /// provider-scoped model manager alive across child startup. Ordinary
-    /// spawns leave this unset to preserve the historical manager-wide auth
-    /// behavior.
+    /// Optional session-scoped auth to inherit across child startup.
+    ///
+    /// Ordinary root sessions pass the same Arc as the manager-wide auth, so
+    /// doing this is behavior-neutral for regular providers. It matters after
+    /// a manifest-backed parent selects an ordinary child provider: later
+    /// ordinary descendants must retain that inherited auth/catalog identity.
     pub(crate) auth_manager: Option<Arc<AuthManager>>,
 }
 

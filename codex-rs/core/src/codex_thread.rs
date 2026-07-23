@@ -608,6 +608,16 @@ impl CodexThread {
         self.session.get_config().await
     }
 
+    /// Return this thread's effective runtime config, including thread-local
+    /// provider, model, and settings overrides.
+    ///
+    /// Callers that fork model-visible history must not reconstruct a child
+    /// from the process startup config when the parent selected an
+    /// authoritative provider manifest at runtime.
+    pub async fn effective_config(&self) -> Arc<crate::config::Config> {
+        self.session.effective_config().await
+    }
+
     /// Resolves model metadata through this thread's provider-scoped catalog.
     ///
     /// Callers outside `codex-core` should not reconstruct a model manager

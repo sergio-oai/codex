@@ -954,12 +954,13 @@ impl ThreadManager {
                 inherited_multi_agent_version,
             ),
         );
-        self.start_thread_inner(
-            options,
-            Some(forked_from_thread_id),
-            Arc::clone(&self.state.auth_manager),
-        )
-        .await
+        // Regular root threads carry the same auth Arc as the manager, while
+        // descendants of manifest-backed threads may carry a scoped identity
+        // even after switching to an ordinary provider. Preserve the source
+        // thread's identity across every fork hop.
+        let auth_manager = Arc::clone(&fork_source.session.services.auth_manager);
+        self.start_thread_inner(options, Some(forked_from_thread_id), auth_manager)
+            .await
     }
 
     pub async fn resume_thread_from_rollout(

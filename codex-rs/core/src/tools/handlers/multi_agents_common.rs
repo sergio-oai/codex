@@ -337,6 +337,117 @@ pub(crate) async fn apply_requested_spawn_agent_model_overrides(
     Ok(())
 }
 
+/// Preserve the pre-manifest model/reasoning override order for ordinary roles.
+///
+/// Before provider manifests, spawn-time model and reasoning requests were
+/// validated against the parent provider before an applied role overwrote any
+/// values it owned. Manifest-backed roles must instead load their provider
+/// first, but ordinary roles must keep both the old validation errors and the
+/// old final values for fields the role does not own.
+pub(crate) async fn apply_legacy_ordinary_spawn_agent_model_overrides(
+    models_manager: &SharedModelsManager,
+    turn: &TurnContext,
+    pre_role_config: &Config,
+    role_config: &mut Config,
+    requested_model: Option<&str>,
+    requested_reasoning_effort: Option<ReasoningEffort>,
+    role_locks: AgentRoleModelLocks,
+) -> Result<(), FunctionCallError> {
+    let requested_model = requested_model.or(turn.config.agent_default_subagent_model.as_deref());
+    let requested_reasoning_effort = requested_reasoning_effort
+        .or_else(|| turn.config.agent_default_subagent_reasoning_effort.clone());
+    let mut legacy_config = pre_role_config.clone();
+
+    if let Some(requested_model) = requested_model {
+        let available_models = models_manager
+            .list_models(
+                RefreshStrategy::Offline,
+                legacy_config.http_client_factory(),
+            )
+            .await;
+        let selected_model_name = find_spawn_agent_model_name(
+            &available_models,
+            requested_model,
+            turn.multi_agent_version,
+        )?;
+        let selected_model_info = models_manager
+            .get_model_info(
+                &selected_model_name,
+                &legacy_config.to_models_manager_config(),
+            )
+            .await;
+
+        legacy_config.model = Some(selected_model_name.clone());
+        if let Some(reasoning_effort) = requested_reasoning_effort {
+            validate_spawn_agent_reasoning_effort(
+                &selected_model_name,
+                &selected_model_info.supported_reasoning_levels,
+                &reasoning_effort,
+            )?;
+            legacy_config.model_reasoning_effort = Some(reasoning_effort);
+        } else {
+            legacy_config.model_reasoning_effort = selected_model_info.default_reasoning_level;
+        }
+    } else if let Some(reasoning_effort) = requested_reasoning_effort {
+        // Keep the exact pre-manifest reasoning-only validation source: before
+        // roles were applied, this checked the live parent turn's model info.
+        validate_spawn_agent_reasoning_effort(
+            &turn.model_info.slug,
+            &turn.model_info.supported_reasoning_levels,
+            &reasoning_effort,
+        )?;
+        legacy_config.model_reasoning_effort = Some(reasoning_effort);
+    }
+
+    if !role_locks.model {
+        role_config.model = legacy_config.model.clone();
+    }
+    if !role_locks.reasoning_effort {
+        role_config.model_reasoning_effort = legacy_config.model_reasoning_effort.clone();
+    }
+    validate_legacy_ordinary_spawn_agent_role_settings(models_manager, &legacy_config, role_config)
+        .await
+}
+
+/// Replay origin/main's post-role model/reasoning check for ordinary providers.
+///
+/// The manifest path must apply roles before loading a provider-scoped catalog,
+/// but ordinary providers historically applied the role after spawn-time
+/// overrides and rejected unsupported role reasoning before child startup.
+async fn validate_legacy_ordinary_spawn_agent_role_settings(
+    models_manager: &SharedModelsManager,
+    pre_role_config: &Config,
+    role_config: &Config,
+) -> Result<(), FunctionCallError> {
+    if role_config.model == pre_role_config.model
+        && role_config.model_reasoning_effort == pre_role_config.model_reasoning_effort
+    {
+        return Ok(());
+    }
+
+    let Some(reasoning_effort) = role_config.model_reasoning_effort.clone() else {
+        return Ok(());
+    };
+    let model = role_config.model.clone().ok_or_else(|| {
+        FunctionCallError::RespondToModel(
+            "spawn_agent could not resolve the child model for reasoning effort validation"
+                .to_string(),
+        )
+    })?;
+    let model_info = models_manager
+        .get_model_info(&model, &role_config.to_models_manager_config())
+        .await;
+    if model_info.used_fallback_model_metadata {
+        return Ok(());
+    }
+
+    validate_spawn_agent_reasoning_effort(
+        &model,
+        &model_info.supported_reasoning_levels,
+        &reasoning_effort,
+    )
+}
+
 pub(crate) async fn apply_spawn_agent_service_tier(
     models_manager: &SharedModelsManager,
     config: &mut Config,
@@ -412,10 +523,17 @@ pub(crate) async fn validate_spawn_agent_role_settings(
     models_manager: &SharedModelsManager,
     config: &Config,
     role_locks: AgentRoleModelLocks,
+    requires_manifest_scoped_handling: bool,
 ) -> Result<(), FunctionCallError> {
     let provider_changed = config.model_provider != turn.config.model_provider
         || config.model_catalog != turn.config.model_catalog;
     let uses_provider_manifest = config.model_provider.provider_manifest_path.is_some();
+    if !requires_manifest_scoped_handling {
+        // `apply_legacy_ordinary_spawn_agent_model_overrides` already replays
+        // origin/main's post-role reasoning check. Keep the newer
+        // authoritative-catalog validation scoped to manifest opt-in.
+        return Ok(());
+    }
     if !uses_provider_manifest
         && !provider_changed
         && !role_locks.model
@@ -484,6 +602,23 @@ pub(crate) async fn models_manager_for_spawn_config(
         .models_manager_for_config(config, Arc::clone(&session.services.auth_manager))
         .await
         .map_err(|err| FunctionCallError::RespondToModel(format!("collab tool failed: {err}")))
+}
+
+/// Whether spawn validation must follow the provider-scoped catalog path.
+///
+/// A manifest-backed parent can switch to an ordinary provider, then switch
+/// ordinary providers again in a descendant. Those later configs no longer
+/// carry a manifest path, but their distinct manager still preserves the
+/// authoritative lineage and must validate against the target provider.
+pub(crate) fn requires_manifest_scoped_spawn_handling(
+    parent_config: &Config,
+    child_config: &Config,
+    parent_models_manager: &SharedModelsManager,
+    child_models_manager: &SharedModelsManager,
+) -> bool {
+    parent_config.model_provider.provider_manifest_path.is_some()
+        || child_config.model_provider.provider_manifest_path.is_some()
+        || !Arc::ptr_eq(parent_models_manager, child_models_manager)
 }
 
 fn find_spawn_agent_model_name(

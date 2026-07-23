@@ -122,7 +122,11 @@ async fn start_review_conversation(
         .clone()
         .unwrap_or_else(|| ctx.model_info.slug.clone());
     sub_agent_config.model = Some(model);
-    (run_codex_thread_one_shot(
+    // The delegate starts a normal Session with provider fallback disabled.
+    // That startup path is the canonical authoritative-manifest validation
+    // point for both the review model and inherited reasoning effort, before
+    // any review inference request can be emitted.
+    match run_codex_thread_one_shot(
         sub_agent_config,
         session.auth_manager(),
         session.models_manager(),
@@ -134,9 +138,14 @@ async fn start_review_conversation(
         /*final_output_json_schema*/ None,
         /*initial_history*/ None,
     )
-    .await)
-        .ok()
-        .map(|(_session, io)| io.rx_event)
+    .await
+    {
+        Ok((_session, io)) => Some(io.rx_event),
+        Err(err) => {
+            tracing::warn!(error = %err, "review delegate failed startup validation");
+            None
+        }
+    }
 }
 
 async fn process_review_events(
