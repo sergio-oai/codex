@@ -3328,16 +3328,23 @@ async fn manifest_model_without_reasoning_efforts_selects_without_override() {
     let mut selected_model = None;
     let mut selected_effort = None;
     let mut persisted_selection = None;
+    let mut saw_partial_settings_update = false;
     while let Ok(event) = rx.try_recv() {
         match event {
-            AppEvent::UpdateModel(model) => selected_model = Some(model),
-            AppEvent::UpdateReasoningEffort(effort) => selected_effort = Some(effort),
+            AppEvent::UpdateModelAndReasoningEffort { model, effort } => {
+                selected_model = Some(model);
+                selected_effort = Some(effort);
+            }
+            AppEvent::UpdateModel(_) | AppEvent::UpdateReasoningEffort(_) => {
+                saw_partial_settings_update = true;
+            }
             AppEvent::PersistModelSelection { model, effort } => {
                 persisted_selection = Some((model, effort));
             }
             _ => {}
         }
     }
+    assert!(!saw_partial_settings_update);
     assert_eq!(selected_model.as_deref(), Some("manifest-no-reasoning"));
     assert_eq!(selected_effort, Some(None));
     assert_eq!(
@@ -3366,7 +3373,9 @@ async fn manifest_auto_model_without_reasoning_efforts_selects_without_override(
     let mut persisted_selection = None;
     while let Ok(event) = rx.try_recv() {
         match event {
-            AppEvent::UpdateReasoningEffort(effort) => selected_effort = Some(effort),
+            AppEvent::UpdateModelAndReasoningEffort { effort, .. } => {
+                selected_effort = Some(effort);
+            }
             AppEvent::PersistModelSelection { model, effort } => {
                 persisted_selection = Some((model, effort));
             }

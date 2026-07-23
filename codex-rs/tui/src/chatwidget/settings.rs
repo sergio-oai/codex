@@ -177,6 +177,67 @@ impl ChatWidget {
         self.refresh_model_dependent_surfaces();
     }
 
+    /// Keep an active Plan mask on the same manifest-advertised effort chosen
+    /// with a model switch, without persisting a new Plan-only override.
+    ///
+    /// Normal global reasoning updates intentionally leave Plan mode alone.
+    /// A manifest model switch is different: the app-server receives the
+    /// effective collaboration mode in the same atomic settings request, so an
+    /// old Plan effort would make that new model/effort pair invalid.
+    pub(crate) fn align_active_plan_reasoning_for_manifest_model_switch(
+        &mut self,
+        effort: Option<ReasoningEffortConfig>,
+    ) {
+        let effort = self.manifest_compatible_reasoning_effort(self.current_model(), effort);
+        if self.collaboration_modes_enabled()
+            && let Some(mask) = self.active_collaboration_mask.as_mut()
+            && mask.mode == Some(ModeKind::Plan)
+        {
+            mask.reasoning_effort = Some(effort);
+            self.refresh_model_dependent_surfaces();
+        }
+    }
+
+    /// Resolve a reasoning effort that the exact manifest model advertises.
+    ///
+    /// Manifest model metadata is authoritative: a stale Plan preset or
+    /// configured Plan override must not recreate a model/effort pair that the
+    /// selected provider rejected when the model was first chosen.
+    fn manifest_compatible_reasoning_effort(
+        &self,
+        model: &str,
+        requested_effort: Option<ReasoningEffortConfig>,
+    ) -> Option<ReasoningEffortConfig> {
+        let Some(preset) = self
+            .model_catalog
+            .try_list_models()
+            .unwrap_or_default()
+            .into_iter()
+            .find(|preset| preset.model == model)
+        else {
+            return requested_effort;
+        };
+        let supports = |effort: &ReasoningEffortConfig| {
+            preset
+                .supported_reasoning_efforts
+                .iter()
+                .any(|option| option.effort == *effort)
+        };
+        if requested_effort
+            .as_ref()
+            .is_some_and(|effort| supports(effort))
+        {
+            return requested_effort;
+        }
+        if supports(&preset.default_reasoning_effort) {
+            return Some(preset.default_reasoning_effort);
+        }
+        preset
+            .supported_reasoning_efforts
+            .first()
+            .map(|option| option.effort.clone())
+    }
+
     /// Set the personality in the widget's config copy.
     pub(crate) fn set_personality(&mut self, personality: Personality) {
         self.config.personality = Some(personality);
@@ -733,6 +794,14 @@ impl ChatWidget {
             && let Some(effort) = self.config.plan_mode_reasoning_effort.clone()
         {
             mask.reasoning_effort = Some(Some(effort));
+        }
+        if mask.mode == Some(ModeKind::Plan) && self.uses_manifest_catalog_selection_semantics() {
+            let model = mask
+                .model
+                .clone()
+                .unwrap_or_else(|| self.current_collaboration_mode.model().to_string());
+            let effort = mask.reasoning_effort.clone().flatten();
+            mask.reasoning_effort = Some(self.manifest_compatible_reasoning_effort(&model, effort));
         }
         if mask.mode == Some(ModeKind::Plan) {
             self.dismissed_plan_mode_nudge_scopes

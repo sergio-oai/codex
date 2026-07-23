@@ -254,6 +254,7 @@ impl ChatWidget {
         effort_for_action: Option<ReasoningEffortConfig>,
         should_prompt_plan_mode_scope: bool,
     ) -> Vec<SelectionAction> {
+        let use_atomic_manifest_update = self.uses_manifest_catalog_selection_semantics();
         let warning = effort_for_action
             .as_ref()
             .and_then(|effort| self.ultra_reasoning_concurrency_warning(effort));
@@ -265,6 +266,15 @@ impl ChatWidget {
                 });
             } else if should_prompt_plan_mode_scope {
                 tx.send(AppEvent::OpenPlanReasoningScopePrompt {
+                    model: model_for_action.clone(),
+                    effort: effort_for_action.clone(),
+                });
+            } else if use_atomic_manifest_update {
+                tx.send(AppEvent::UpdateModelAndReasoningEffort {
+                    model: model_for_action.clone(),
+                    effort: effort_for_action.clone(),
+                });
+                tx.send(AppEvent::PersistModelSelection {
                     model: model_for_action.clone(),
                     effort: effort_for_action.clone(),
                 });
@@ -741,9 +751,14 @@ impl ChatWidget {
         let warning = effort
             .as_ref()
             .and_then(|effort| self.ultra_reasoning_concurrency_warning(effort));
-        self.app_event_tx.send(AppEvent::UpdateModel(model));
-        self.app_event_tx
-            .send(AppEvent::UpdateReasoningEffort(effort));
+        if self.uses_manifest_catalog_selection_semantics() {
+            self.app_event_tx
+                .send(AppEvent::UpdateModelAndReasoningEffort { model, effort });
+        } else {
+            self.app_event_tx.send(AppEvent::UpdateModel(model));
+            self.app_event_tx
+                .send(AppEvent::UpdateReasoningEffort(effort));
+        }
         if let Some(warning) = warning {
             self.app_event_tx.send(AppEvent::InsertHistoryCell(Box::new(
                 history_cell::new_warning_event(warning),

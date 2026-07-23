@@ -356,6 +356,58 @@ async fn reasoning_selection_in_plan_mode_without_effort_change_does_not_open_sc
 }
 
 #[tokio::test]
+async fn manifest_model_switch_aligns_active_plan_effort_for_atomic_update() {
+    let (mut chat, _rx, _op_rx) = make_chatwidget_manual(Some("gpt-5.4")).await;
+    let mut manifest_preset = get_available_model(&chat, "gpt-5.4");
+    manifest_preset.id = "manifest-low-only".to_string();
+    manifest_preset.model = "manifest-low-only".to_string();
+    manifest_preset.default_reasoning_effort = ReasoningEffortConfig::Low;
+    manifest_preset.supported_reasoning_efforts = vec![ReasoningEffortPreset {
+        effort: ReasoningEffortConfig::Low,
+        description: "Low reasoning".to_string(),
+    }];
+    chat.model_catalog = Arc::new(ModelCatalog::new(vec![manifest_preset]));
+    chat.model_catalog_provenance = ModelCatalogProvenance::KnownManifest;
+    chat.set_feature_enabled(Feature::CollaborationModes, /*enabled*/ true);
+    let mut plan_mask = collaboration_modes::plan_mask(chat.model_catalog.as_ref())
+        .expect("expected plan collaboration mode");
+    plan_mask.reasoning_effort = Some(Some(ReasoningEffortConfig::High));
+    chat.set_collaboration_mask(plan_mask);
+
+    chat.set_model("manifest-low-only");
+    chat.set_reasoning_effort(Some(ReasoningEffortConfig::Low));
+    assert_eq!(
+        chat.effective_reasoning_effort(),
+        Some(ReasoningEffortConfig::High),
+        "ordinary global updates intentionally leave the active Plan mask alone"
+    );
+
+    chat.align_active_plan_reasoning_for_manifest_model_switch(Some(ReasoningEffortConfig::Low));
+
+    assert_eq!(chat.current_model(), "manifest-low-only");
+    assert_eq!(
+        chat.effective_reasoning_effort(),
+        Some(ReasoningEffortConfig::Low),
+        "the atomic manifest request must carry the selected model's compatible effort"
+    );
+
+    let default_mask = collaboration_modes::default_mask(chat.model_catalog.as_ref())
+        .expect("expected default collaboration mode");
+    chat.set_collaboration_mask(default_mask);
+    let mut rebuilt_plan_mask = collaboration_modes::plan_mask(chat.model_catalog.as_ref())
+        .expect("expected rebuilt plan collaboration mode");
+    rebuilt_plan_mask.model = Some("manifest-low-only".to_string());
+    rebuilt_plan_mask.reasoning_effort = Some(Some(ReasoningEffortConfig::High));
+    chat.set_collaboration_mask(rebuilt_plan_mask);
+
+    assert_eq!(
+        chat.effective_reasoning_effort(),
+        Some(ReasoningEffortConfig::Low),
+        "re-entering Plan must not restore an effort the manifest model rejects"
+    );
+}
+
+#[tokio::test]
 async fn reasoning_selection_in_plan_mode_matching_plan_effort_but_different_global_opens_scope_prompt()
  {
     let (mut chat, mut rx, _op_rx) = make_chatwidget_manual(Some("gpt-5.4")).await;

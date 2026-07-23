@@ -228,10 +228,10 @@ impl MemoryStartupContext {
     /// Resolves a memory worker model without assuming that an authoritative
     /// custom-provider manifest contains Codex's private OpenAI helper models.
     ///
-    /// Explicit memory model configuration always wins. Manifest-backed
-    /// providers otherwise reuse the already-selected thread model, which was
-    /// validated against that provider's authoritative catalog at thread
-    /// startup. Ordinary providers retain their historical provider default.
+    /// Explicit memory model configuration wins for ordinary providers. For an
+    /// authoritative manifest, honor it only when the exact model is listed;
+    /// otherwise reuse the already-selected thread model, which was validated
+    /// against that provider's catalog at thread startup.
     pub(crate) async fn preferred_memory_model(
         &self,
         config: &Config,
@@ -239,6 +239,20 @@ impl MemoryStartupContext {
         provider_default: &str,
     ) -> String {
         if let Some(configured_model) = configured_model {
+            if config.model_provider.provider_manifest_path.is_some()
+                && !self
+                    .thread
+                    .provider_catalog_contains_model(configured_model, config)
+                    .await
+            {
+                let active_model = self.thread.config_snapshot().await.model;
+                tracing::warn!(
+                    configured_model,
+                    active_model,
+                    "configured memory model is not advertised by provider manifest; using active thread model"
+                );
+                return active_model;
+            }
             return configured_model.to_string();
         }
         if config.model_provider.provider_manifest_path.is_some() {
@@ -382,18 +396,23 @@ impl MemoryStartupContext {
         config: Config,
         prompt: Vec<UserInput>,
     ) -> anyhow::Result<SpawnedConsolidationAgent> {
+        let uses_provider_manifest = config.model_provider.provider_manifest_path.is_some();
+        let start_options = StartThreadOptions {
+            session_source: Some(SessionSource::Internal(
+                InternalSessionSource::MemoryConsolidation,
+            )),
+            thread_source: Some(ThreadSource::MemoryConsolidation),
+            ..StartThreadOptions::new(config)
+        };
         let NewThread {
             thread_id, thread, ..
-        } = self
-            .thread_manager
-            .start_thread(StartThreadOptions {
-                session_source: Some(SessionSource::Internal(
-                    InternalSessionSource::MemoryConsolidation,
-                )),
-                thread_source: Some(ThreadSource::MemoryConsolidation),
-                ..StartThreadOptions::new(config)
-            })
-            .await?;
+        } = if uses_provider_manifest {
+            self.thread_manager
+                .start_thread_with_auth_manager(start_options, Arc::clone(&self.auth_manager))
+                .await?
+        } else {
+            self.thread_manager.start_thread(start_options).await?
+        };
 
         let agent = SpawnedConsolidationAgent { thread_id, thread };
         if let Err(err) = agent

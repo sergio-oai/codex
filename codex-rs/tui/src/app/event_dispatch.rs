@@ -1095,6 +1095,18 @@ impl App {
                 self.sync_active_thread_service_tier_to_cached_session()
                     .await;
             }
+            AppEvent::UpdateModelAndReasoningEffort { model, effort } => {
+                self.chat_widget.set_model(&model);
+                self.on_update_reasoning_effort(effort.clone());
+                self.chat_widget
+                    .align_active_plan_reasoning_for_manifest_model_switch(effort.clone());
+                if let Some(mut params) = self.active_thread_model_setting_update_params(model) {
+                    params.effort = effort;
+                    self.send_thread_settings_update(app_server, params).await;
+                }
+                self.sync_active_thread_service_tier_to_cached_session()
+                    .await;
+            }
             AppEvent::UpdatePersonality(personality) => {
                 self.on_update_personality(personality);
                 self.sync_active_thread_personality_setting(app_server, personality)

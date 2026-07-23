@@ -7,6 +7,7 @@ use crate::session::SteerInputError;
 use crate::session::session::Session;
 use codex_exec_server::SelectedCapabilityRootsStatus;
 use codex_features::Feature;
+use codex_models_manager::manager::RefreshStrategy;
 use codex_otel::SessionTelemetry;
 use codex_protocol::ThreadId;
 use codex_protocol::config_types::ApprovalsReviewer;
@@ -620,6 +621,25 @@ impl CodexThread {
             .models_manager
             .get_model_info(model, &config.to_models_manager_config())
             .await
+    }
+
+    /// Check exact model membership in this thread's provider-scoped catalog.
+    ///
+    /// Detached thread-adjacent workers such as memories must not infer
+    /// availability from prefix-matched fallback metadata when an authoritative
+    /// provider manifest is active.
+    pub async fn provider_catalog_contains_model(
+        &self,
+        model: &str,
+        config: &crate::config::Config,
+    ) -> bool {
+        self.session
+            .services
+            .models_manager
+            .list_models(RefreshStrategy::Offline, config.http_client_factory())
+            .await
+            .iter()
+            .any(|preset| preset.model == model)
     }
 
     /// Resolves the MCP runtime configuration using this thread's extension data.

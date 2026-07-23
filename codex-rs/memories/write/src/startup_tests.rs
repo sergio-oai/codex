@@ -480,7 +480,8 @@ async fn memories_startup_phase2_explicit_model_override_drives_request_model() 
 }
 
 #[tokio::test]
-async fn manifest_memory_defaults_reuse_the_active_thread_model() -> anyhow::Result<()> {
+async fn manifest_memory_defaults_and_unknown_overrides_reuse_the_active_thread_model()
+-> anyhow::Result<()> {
     let server = start_mock_server().await;
     let home = Arc::new(TempDir::new()?);
     let test = build_test_codex_with_memories_config(&server, home, startup_test_memories_config())
@@ -509,7 +510,7 @@ async fn manifest_memory_defaults_reuse_the_active_thread_model() -> anyhow::Res
                 MOCK_PROVIDER_PHASE_TWO_MODEL,
             )
             .await,
-        "explicit-memory-model"
+        active_model
     );
 
     shutdown_test_codex(&test).await?;
@@ -559,6 +560,29 @@ async fn manifest_memory_request_context_uses_thread_scoped_catalog() -> anyhow:
         Arc::clone(&manifest_thread.thread),
         &manifest_config,
         manifest_source,
+    );
+
+    assert_eq!(
+        context
+            .preferred_memory_model(
+                &manifest_config,
+                Some("venado-memory"),
+                MOCK_PROVIDER_PHASE_ONE_MODEL,
+            )
+            .await,
+        "venado-memory",
+        "an exact manifest model remains a valid explicit memory override"
+    );
+    assert_eq!(
+        context
+            .preferred_memory_model(
+                &manifest_config,
+                Some("venado-memory-preview"),
+                MOCK_PROVIDER_PHASE_ONE_MODEL,
+            )
+            .await,
+        "venado-memory",
+        "prefix-matched fallback metadata must not bypass the manifest catalog"
     );
 
     let request_context = context

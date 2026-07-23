@@ -761,6 +761,14 @@ pub(crate) enum AppEvent {
     /// Update the current model slug in the running app and widget.
     UpdateModel(String),
 
+    /// Update a manifest-backed model and its reasoning effort as one thread
+    /// settings change so an intermediate incompatible pair is never sent to
+    /// the authoritative provider.
+    UpdateModelAndReasoningEffort {
+        model: String,
+        effort: Option<ReasoningEffort>,
+    },
+
     /// Update the current personality in the running app and widget.
     UpdatePersonality(Personality),
 

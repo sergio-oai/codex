@@ -850,13 +850,38 @@ impl ThreadManager {
     }
 
     pub async fn start_thread(&self, options: StartThreadOptions) -> CodexResult<NewThread> {
-        Box::pin(self.start_thread_inner(options, /*forked_from_thread_id*/ None)).await
+        Box::pin(self.start_thread_inner(
+            options,
+            /*forked_from_thread_id*/ None,
+            Arc::clone(&self.state.auth_manager),
+        ))
+        .await
+    }
+
+    /// Start a thread with the caller's session-scoped authentication.
+    ///
+    /// Detached workers that originate from an already-running manifest-backed
+    /// thread use this to keep provider credentials and provider-scoped model
+    /// catalogs aligned with their parent. Ordinary thread starts should use
+    /// [`Self::start_thread`], which preserves the process-wide auth behavior.
+    pub async fn start_thread_with_auth_manager(
+        &self,
+        options: StartThreadOptions,
+        auth_manager: Arc<AuthManager>,
+    ) -> CodexResult<NewThread> {
+        Box::pin(self.start_thread_inner(
+            options,
+            /*forked_from_thread_id*/ None,
+            auth_manager,
+        ))
+        .await
     }
 
     async fn start_thread_inner(
         &self,
         options: StartThreadOptions,
         forked_from_thread_id: Option<ThreadId>,
+        auth_manager: Arc<AuthManager>,
     ) -> CodexResult<NewThread> {
         let environments = options.environments.unwrap_or_else(|| {
             default_thread_environment_selections(
@@ -877,7 +902,7 @@ impl ThreadManager {
             options.initial_history,
             options.history_mode,
             options.allow_provider_model_fallback,
-            Arc::clone(&self.state.auth_manager),
+            auth_manager,
             agent_control,
             session_source,
             /*parent_thread_id*/ None,
@@ -929,8 +954,12 @@ impl ThreadManager {
                 inherited_multi_agent_version,
             ),
         );
-        self.start_thread_inner(options, Some(forked_from_thread_id))
-            .await
+        self.start_thread_inner(
+            options,
+            Some(forked_from_thread_id),
+            Arc::clone(&self.state.auth_manager),
+        )
+        .await
     }
 
     pub async fn resume_thread_from_rollout(

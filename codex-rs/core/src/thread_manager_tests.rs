@@ -384,6 +384,37 @@ async fn ignores_session_prefix_messages_when_truncating() {
 }
 
 #[tokio::test]
+async fn start_thread_with_auth_manager_keeps_session_scoped_auth() {
+    let temp_dir = tempdir().expect("tempdir");
+    let mut config = test_config().await;
+    config.codex_home = temp_dir.path().join("codex-home").abs();
+    config.cwd = config.codex_home.abs();
+    std::fs::create_dir_all(&config.codex_home).expect("create codex home");
+
+    let manager = ThreadManager::with_models_provider_and_home_for_tests(
+        CodexAuth::from_api_key("manager"),
+        config.model_provider.clone(),
+        config.codex_home.to_path_buf(),
+        Arc::new(codex_exec_server::EnvironmentManager::default_for_tests()),
+    );
+    let session_auth_manager =
+        AuthManager::from_auth_for_testing(CodexAuth::from_api_key("session"));
+
+    let thread = manager
+        .start_thread_with_auth_manager(
+            StartThreadOptions::new(config),
+            Arc::clone(&session_auth_manager),
+        )
+        .await
+        .expect("start thread with session auth");
+
+    assert!(Arc::ptr_eq(
+        &thread.thread.session.services.auth_manager,
+        &session_auth_manager,
+    ));
+}
+
+#[tokio::test]
 async fn provider_manifest_model_managers_are_scoped_without_changing_regular_reuse() {
     let temp_dir = tempdir().expect("tempdir");
     let mut config = test_config().await;

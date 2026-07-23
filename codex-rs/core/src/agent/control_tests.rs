@@ -36,8 +36,8 @@ use codex_protocol::protocol::AskForApproval;
 use codex_protocol::protocol::CompactedItem;
 use codex_protocol::protocol::ErrorEvent;
 use codex_protocol::protocol::EventMsg;
-use codex_protocol::protocol::InterAgentCommunication;
 use codex_protocol::protocol::InitialHistory;
+use codex_protocol::protocol::InterAgentCommunication;
 use codex_protocol::protocol::ItemCompletedEvent;
 use codex_protocol::protocol::RolloutItem;
 use codex_protocol::protocol::RolloutLine;
@@ -634,8 +634,7 @@ async fn send_inter_agent_communication_without_turn_queues_message_without_trig
 #[tokio::test]
 async fn spawn_agent_auth_override_keeps_child_on_parent_auth() {
     let harness = AgentControlHarness::new().await;
-    let parent_auth_manager =
-        AuthManager::from_auth_for_testing(CodexAuth::from_api_key("parent"));
+    let parent_auth_manager = AuthManager::from_auth_for_testing(CodexAuth::from_api_key("parent"));
     let parent = harness
         .manager
         .resume_thread_with_history(
