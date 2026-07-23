@@ -20,6 +20,7 @@ use crate::app_event_sender::AppEventSender;
 use crate::app_server_session::AppServerBootstrap;
 use crate::app_server_session::AppServerSession;
 use crate::app_server_session::AppServerStartedThread;
+use crate::app_server_session::ThreadParamsMode;
 use crate::app_server_session::TurnPermissionsOverride;
 use crate::app_server_session::app_server_rate_limit_snapshots;
 use crate::bottom_pane::AppLinkViewParams;
@@ -543,6 +544,32 @@ fn model_catalog_provenance_for_manifest_status(
     }
 }
 
+/// Classify the startup catalog from the server that actually produced it.
+///
+/// New servers report the exact catalog source in the existing bootstrap
+/// model/list response. Older servers keep the historic local inference for
+/// ordinary providers so a protocol version mismatch does not add a new
+/// model/list RPC to regular resume/fork flows. When the local provider has
+/// explicitly opted into a manifest, an older remote server is ambiguous;
+/// refresh that thread-scoped catalog before reuse.
+fn bootstrap_model_catalog_provenance(
+    config: &Config,
+    thread_params_mode: ThreadParamsMode,
+    reported_uses_manifest: Option<bool>,
+) -> ModelCatalogProvenance {
+    match reported_uses_manifest {
+        Some(uses_manifest) => model_catalog_provenance_for_manifest_status(Some(uses_manifest)),
+        None if matches!(thread_params_mode, ThreadParamsMode::Remote)
+            && config.model_provider.provider_manifest_path.is_some() =>
+        {
+            ModelCatalogProvenance::Unknown
+        }
+        None => {
+            model_catalog_provenance_for_provider(config, Some(config.model_provider_id.as_str()))
+        }
+    }
+}
+
 /// Prefer the loaded thread's effective provider hint when a new app server
 /// supplies it. Older servers omit the hint, so preserve the existing local
 /// provider-ID lookup instead of adding a new model-list RPC for ordinary
@@ -897,6 +924,7 @@ impl App {
             );
         }
         let mut model = config.model.clone().unwrap_or(bootstrap.default_model);
+        let bootstrap_model_provider_uses_manifest = bootstrap.model_provider_uses_manifest;
         let available_models = bootstrap.available_models;
         let remote_connection = crate::status::remote_connection::remote_connection_status_value(
             &app_server_target,
@@ -924,8 +952,11 @@ impl App {
             model = updated_model;
         }
         let mut model_catalog = Arc::new(ModelCatalog::new(available_models.clone()));
-        let mut model_catalog_provenance =
-            model_catalog_provenance_for_provider(&config, Some(config.model_provider_id.as_str()));
+        let mut model_catalog_provenance = bootstrap_model_catalog_provenance(
+            &config,
+            app_server.thread_params_mode(),
+            bootstrap_model_provider_uses_manifest,
+        );
         let feedback_audience = bootstrap.feedback_audience;
         let auth_mode = bootstrap.auth_mode;
         let has_chatgpt_account = bootstrap.has_chatgpt_account;

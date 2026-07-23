@@ -135,6 +135,11 @@ pub struct ReasoningEffortOption {
 #[ts(export_to = "v2/")]
 pub struct ModelListResponse {
     pub data: Vec<Model>,
+    /// Whether the catalog source uses an authoritative provider manifest.
+    /// Older app servers omit this hint; clients should then preserve their
+    /// existing compatibility fallback.
+    #[serde(default)]
+    pub model_provider_uses_manifest: Option<bool>,
     /// Opaque cursor to pass to the next call to continue after the last item.
     /// If None, there are no more items to return.
     pub next_cursor: Option<String>,

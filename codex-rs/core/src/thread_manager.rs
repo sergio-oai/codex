@@ -738,6 +738,26 @@ impl ThreadManager {
             .await
     }
 
+    /// Report whether the exact catalog source selected by model/list uses
+    /// an authoritative provider manifest.
+    ///
+    /// Unscoped lists use the startup provider. Thread-scoped lists follow the
+    /// loaded thread's effective config, including same-ID provider overrides.
+    pub async fn model_catalog_uses_provider_manifest(
+        &self,
+        thread_id: Option<ThreadId>,
+    ) -> CodexResult<bool> {
+        match thread_id {
+            Some(thread_id) => Ok(self
+                .get_thread(thread_id)
+                .await?
+                .config_snapshot()
+                .await
+                .model_provider_uses_manifest),
+            None => Ok(self.state.startup_provider_uses_manifest),
+        }
+    }
+
     pub fn list_collaboration_modes(&self) -> Vec<CollaborationModeMask> {
         self.state.models_manager.list_collaboration_modes()
     }

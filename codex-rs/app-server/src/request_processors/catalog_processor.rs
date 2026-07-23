@@ -266,8 +266,12 @@ impl CatalogRequestProcessor {
             .map(ThreadId::from_string)
             .transpose()
             .map_err(|err| invalid_request(format!("invalid thread id: {err}")))?;
+        let model_provider_uses_manifest = thread_manager
+            .model_catalog_uses_provider_manifest(thread_id)
+            .await
+            .map_err(|err| invalid_request(format!("failed to inspect model catalog: {err}")))?;
         let models = supported_models(
-            thread_manager,
+            Arc::clone(&thread_manager),
             thread_id,
             include_hidden.unwrap_or(false),
             http_client_factory,
@@ -279,6 +283,7 @@ impl CatalogRequestProcessor {
         if total == 0 {
             return Ok(ModelListResponse {
                 data: Vec::new(),
+                model_provider_uses_manifest: Some(model_provider_uses_manifest),
                 next_cursor: None,
             });
         }
@@ -307,6 +312,7 @@ impl CatalogRequestProcessor {
         };
         Ok(ModelListResponse {
             data: items,
+            model_provider_uses_manifest: Some(model_provider_uses_manifest),
             next_cursor,
         })
     }

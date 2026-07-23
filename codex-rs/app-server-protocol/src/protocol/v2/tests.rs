@@ -4179,6 +4179,15 @@ fn thread_lifecycle_responses_default_missing_optional_fields() {
 }
 
 #[test]
+fn model_list_response_defaults_missing_manifest_hint() {
+    let response: ModelListResponse =
+        serde_json::from_value(json!({ "data": [], "nextCursor": null }))
+            .expect("legacy model/list response");
+
+    assert_eq!(response.model_provider_uses_manifest, None);
+}
+
+#[test]
 fn thread_recency_sort_key_serializes_as_snake_case() {
     assert_eq!(
         serde_json::to_value(ThreadSortKey::RecencyAt).expect("sort key should serialize"),

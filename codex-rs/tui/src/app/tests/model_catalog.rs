@@ -149,6 +149,56 @@ async fn loaded_thread_catalog_refresh_keeps_server_manifest_hint() {
     );
 }
 
+#[tokio::test]
+async fn bootstrap_catalog_provenance_prefers_server_hint() {
+    let app = make_test_app().await;
+    let config = app.config.clone();
+    let mut manifest_config = config.clone();
+    manifest_config.model_provider.provider_manifest_path =
+        Some("codex/provider-manifest".to_string());
+
+    assert_eq!(
+        bootstrap_model_catalog_provenance(
+            &config,
+            ThreadParamsMode::Remote,
+            /*reported_uses_manifest*/ Some(true),
+        ),
+        ModelCatalogProvenance::KnownManifest
+    );
+    assert_eq!(
+        bootstrap_model_catalog_provenance(
+            &manifest_config,
+            ThreadParamsMode::Remote,
+            /*reported_uses_manifest*/ Some(false),
+        ),
+        ModelCatalogProvenance::KnownOrdinary
+    );
+    assert_eq!(
+        bootstrap_model_catalog_provenance(
+            &config,
+            ThreadParamsMode::Remote,
+            /*reported_uses_manifest*/ None,
+        ),
+        ModelCatalogProvenance::KnownOrdinary
+    );
+    assert_eq!(
+        bootstrap_model_catalog_provenance(
+            &manifest_config,
+            ThreadParamsMode::Remote,
+            /*reported_uses_manifest*/ None,
+        ),
+        ModelCatalogProvenance::Unknown
+    );
+    assert_eq!(
+        bootstrap_model_catalog_provenance(
+            &manifest_config,
+            ThreadParamsMode::Embedded,
+            /*reported_uses_manifest*/ None,
+        ),
+        ModelCatalogProvenance::KnownManifest
+    );
+}
+
 fn model_migration_copy_to_plain_text(copy: &crate::model_migration::ModelMigrationCopy) -> String {
     if let Some(markdown) = copy.markdown.as_ref() {
         return markdown.clone();

@@ -107,6 +107,7 @@ async fn list_models_returns_all_models_with_large_limit() -> Result<()> {
         .await?;
     let ModelListResponse {
         data: items,
+        model_provider_uses_manifest,
         next_cursor,
     } = mcp
         .request(|request_id| ClientRequest::ModelList {
@@ -123,6 +124,7 @@ async fn list_models_returns_all_models_with_large_limit() -> Result<()> {
     let expected_models = expected_visible_models();
 
     assert_eq!(items, expected_models);
+    assert_eq!(model_provider_uses_manifest, Some(false));
     assert!(next_cursor.is_none());
     Ok(())
 }
@@ -139,6 +141,7 @@ async fn list_models_includes_hidden_models() -> Result<()> {
     let ModelListResponse {
         data: items,
         next_cursor,
+        ..
     } = mcp
         .request(|request_id| ClientRequest::ModelList {
             request_id,
@@ -222,6 +225,7 @@ openai_base_url = "{server_uri}/v1"
     let ModelListResponse {
         data: items,
         next_cursor,
+        ..
     } = mcp
         .request(|request_id| ClientRequest::ModelList {
             request_id,
@@ -310,6 +314,7 @@ provider_manifest_path = "codex/provider-manifest"
         .await?;
     let ModelListResponse {
         data: items,
+        model_provider_uses_manifest,
         next_cursor,
     } = mcp
         .request(|request_id| ClientRequest::ModelList {
@@ -324,6 +329,7 @@ provider_manifest_path = "codex/provider-manifest"
         .await?;
 
     assert_eq!(items.len(), 1);
+    assert_eq!(model_provider_uses_manifest, Some(true));
     assert_eq!(items[0].id, "venado-only");
     assert_eq!(items[0].model, "venado-only");
     assert_eq!(
@@ -543,6 +549,7 @@ async fn list_models_pagination_works() -> Result<()> {
         let ModelListResponse {
             data: page_items,
             next_cursor,
+            ..
         } = mcp
             .request(|request_id| ClientRequest::ModelList {
                 request_id,

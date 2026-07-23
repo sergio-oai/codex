@@ -5,6 +5,12 @@ import type { Model } from "./Model";
 
 export type ModelListResponse = { data: Array<Model>,
 /**
+ * Whether the catalog source uses an authoritative provider manifest.
+ * Older app servers omit this hint; clients should then preserve their
+ * existing compatibility fallback.
+ */
+modelProviderUsesManifest: boolean | null,
+/**
  * Opaque cursor to pass to the next call to continue after the last item.
  * If None, there are no more items to return.
  */

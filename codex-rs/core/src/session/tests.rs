@@ -40,6 +40,7 @@ use codex_login::CodexAuth;
 use codex_login::auth::AgentIdentityAuthPolicy;
 use codex_model_provider_info::ModelProviderInfo;
 use codex_models_manager::bundled_models_response;
+use codex_models_manager::manager::StaticModelsManager;
 use codex_models_manager::model_info;
 use codex_models_manager::test_support::construct_model_info_offline_for_tests;
 use codex_models_manager::test_support::get_model_offline_for_tests;
@@ -60,6 +61,7 @@ use codex_protocol::models::ImageDetail;
 use codex_protocol::models::PermissionProfile;
 use codex_protocol::models::SandboxEnforcement;
 use codex_protocol::openai_models::ModelServiceTier;
+use codex_protocol::openai_models::ModelsResponse;
 use codex_protocol::permissions::FileSystemAccessMode;
 use codex_protocol::permissions::FileSystemPath;
 use codex_protocol::permissions::FileSystemSandboxEntry;
@@ -5072,6 +5074,96 @@ async fn session_update_settings_does_not_rewrite_sticky_environment_cwds() {
     assert_eq!(config.cwd, turn_cwd);
     assert_eq!(next_turn_cwd, turn_cwd);
     assert_eq!(next_turn.config.cwd, turn_cwd);
+}
+
+#[tokio::test]
+async fn provider_manifest_rejects_unadvertised_model_transitions() {
+    let (mut session, _turn_context) = make_session_and_context().await;
+    let current_model = {
+        let state = session.state.lock().await;
+        state
+            .session_configuration
+            .collaboration_mode
+            .model()
+            .to_string()
+    };
+    let mut config = (*session.get_config().await).clone();
+    config.model_provider.provider_manifest_path = Some("codex/provider-manifest".to_string());
+    let allowed_model = construct_model_info_offline_for_tests(
+        current_model.as_str(),
+        &config.to_models_manager_config(),
+    );
+    session.services.models_manager = Arc::new(StaticModelsManager::new(
+        /*auth_manager*/ None,
+        ModelsResponse {
+            models: vec![allowed_model],
+        },
+    ));
+    {
+        let mut state = session.state.lock().await;
+        state.session_configuration.provider = config.model_provider.clone();
+        state.session_configuration.original_config_do_not_use = Arc::new(config);
+    }
+
+    let updates = SessionSettingsUpdate {
+        collaboration_mode: Some(CollaborationMode {
+            mode: ModeKind::Default,
+            settings: Settings {
+                model: "unlisted-manifest-model".to_string(),
+                reasoning_effort: None,
+                developer_instructions: None,
+            },
+        }),
+        ..Default::default()
+    };
+
+    let preview_error = session
+        .preview_settings(&updates)
+        .await
+        .expect_err("preview should reject an unadvertised manifest model");
+    assert!(
+        preview_error
+            .to_string()
+            .contains("unlisted-manifest-model"),
+        "unexpected preview error: {preview_error}"
+    );
+    assert!(
+        session.update_settings(updates.clone()).await.is_err(),
+        "core thread settings should reject an unadvertised manifest model"
+    );
+    assert!(
+        session
+            .new_turn_with_sub_id("manifest-transition".to_string(), updates)
+            .await
+            .is_err(),
+        "core turn creation should reject an unadvertised manifest model"
+    );
+    assert_eq!(
+        session.thread_config_snapshot().await.model,
+        current_model,
+        "rejected transitions must leave the active model unchanged"
+    );
+}
+
+#[tokio::test]
+async fn ordinary_providers_keep_existing_model_override_behavior() {
+    let (session, _turn_context) = make_session_and_context().await;
+    let updates = SessionSettingsUpdate {
+        collaboration_mode: Some(CollaborationMode {
+            mode: ModeKind::Default,
+            settings: Settings {
+                model: "ordinary-provider-override".to_string(),
+                reasoning_effort: None,
+                developer_instructions: None,
+            },
+        }),
+        ..Default::default()
+    };
+
+    assert!(
+        session.preview_settings(&updates).await.is_ok(),
+        "ordinary providers should not gain manifest membership validation"
+    );
 }
 
 #[tokio::test]

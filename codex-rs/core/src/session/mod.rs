@@ -185,6 +185,7 @@ use crate::codex_thread::ThreadConfigSnapshot;
 use crate::compact::collect_user_messages;
 use crate::config::Config;
 use crate::config::Constrained;
+use crate::config::ConstraintError;
 use crate::config::ConstraintResult;
 use crate::config::PermissionProfileSnapshot;
 use crate::config::PermissionProfileState;
@@ -1502,10 +1503,75 @@ impl Session {
         state.set_previous_turn_settings(previous_turn_settings);
     }
 
+    /// Authoritative provider manifests are exact catalogs, not metadata hints.
+    ///
+    /// Keep the current model running if a later catalog refresh removes it,
+    /// but reject an explicit transition to a model the already-loaded
+    /// manifest does not advertise. Ordinary providers return before touching
+    /// the model manager, preserving their existing override behavior.
+    pub(crate) async fn validate_provider_manifest_model_transition(
+        &self,
+        updates: &SessionSettingsUpdate,
+    ) -> ConstraintResult<()> {
+        let Some(collaboration_mode) = updates.collaboration_mode.as_ref() else {
+            return Ok(());
+        };
+        let requested_model = collaboration_mode.model().to_string();
+        let (current_model, config) = {
+            let state = self.state.lock().await;
+            (
+                state
+                    .session_configuration
+                    .collaboration_mode
+                    .model()
+                    .to_string(),
+                Arc::clone(&state.session_configuration.original_config_do_not_use),
+            )
+        };
+        if requested_model == current_model {
+            return Ok(());
+        }
+        let Some(provider_manifest_path) = config.model_provider.provider_manifest_path.as_deref()
+        else {
+            return Ok(());
+        };
+        let available_models = self
+            .services
+            .models_manager
+            .list_models_with_refresh_error(
+                RefreshStrategy::OnlineIfUncached,
+                config.http_client_factory(),
+            )
+            .await
+            .map_err(|err| ConstraintError::InvalidValue {
+                field_name: "model",
+                candidate: requested_model.clone(),
+                allowed: format!(
+                    "advertised by available provider manifest {} (refresh failed: {err})",
+                    provider_manifest_path
+                ),
+                requirement_source: codex_config::RequirementSource::Unknown,
+            })?;
+        if available_models
+            .iter()
+            .any(|available_model| available_model.model == requested_model)
+        {
+            return Ok(());
+        }
+        Err(ConstraintError::InvalidValue {
+            field_name: "model",
+            candidate: requested_model,
+            allowed: format!("advertised by provider manifest {provider_manifest_path}"),
+            requirement_source: codex_config::RequirementSource::Unknown,
+        })
+    }
+
     pub(crate) async fn update_settings(
         &self,
         updates: SessionSettingsUpdate,
     ) -> ConstraintResult<()> {
+        self.validate_provider_manifest_model_transition(&updates)
+            .await?;
         let notify_config_contributors = !self.services.extensions.config_contributors().is_empty();
         let (previous_config, new_config, permission_profile_changed) = {
             let mut state = self.state.lock().await;
@@ -1546,6 +1612,8 @@ impl Session {
         &self,
         updates: &SessionSettingsUpdate,
     ) -> ConstraintResult<ThreadConfigSnapshot> {
+        self.validate_provider_manifest_model_transition(updates)
+            .await?;
         let state = self.state.lock().await;
         state
             .session_configuration

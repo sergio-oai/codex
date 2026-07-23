@@ -23,11 +23,18 @@ use codex_protocol::config_types::SERVICE_TIER_DEFAULT_REQUEST_VALUE;
 use core_test_support::responses;
 use pretty_assertions::assert_eq;
 use serde_json::Value;
+use serde_json::json;
 use std::time::Duration;
 use tempfile::TempDir;
 use tokio::time::timeout;
+use wiremock::Mock;
+use wiremock::MockServer;
+use wiremock::ResponseTemplate;
+use wiremock::matchers::method;
+use wiremock::matchers::path;
 
 const DEFAULT_TIMEOUT: Duration = Duration::from_secs(10);
+const INVALID_REQUEST_ERROR_CODE: i64 = -32600;
 
 #[tokio::test]
 async fn thread_settings_update_emits_notification_and_updates_future_turns() -> Result<()> {
@@ -358,6 +365,129 @@ async fn turn_start_settings_override_emits_thread_settings_updated() -> Result<
         mcp.read_stream_until_notification_message("turn/completed"),
     )
     .await??;
+    Ok(())
+}
+
+#[tokio::test]
+async fn manifest_provider_rejects_unadvertised_later_model_overrides() -> Result<()> {
+    let server = MockServer::start().await;
+    Mock::given(method("GET"))
+        .and(path("/v1/codex/provider-manifest"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "schema_version": 1,
+            "models": [{
+                "id": "venado-only",
+                "display_name": "Venado only",
+                "description": "Only advertised by the configured provider manifest",
+                "context_window": 32_000,
+                "max_input_tokens": 24_000,
+                "default_reasoning_effort": "medium",
+                "supported_reasoning_efforts": ["medium"],
+                "service_tiers": []
+            }]
+        })))
+        .expect(1..)
+        .mount(&server)
+        .await;
+
+    let codex_home = TempDir::new()?;
+    std::fs::write(
+        codex_home.path().join("config.toml"),
+        format!(
+            r#"
+model_provider = "venado"
+
+[model_providers.venado]
+name = "Venado"
+base_url = "{}/v1"
+experimental_bearer_token = "venado-test-token"
+wire_api = "responses"
+provider_manifest_path = "codex/provider-manifest"
+"#,
+            server.uri()
+        ),
+    )?;
+
+    let mut mcp = TestAppServer::builder()
+        .with_codex_home(codex_home.path())
+        .without_auto_env()
+        .build_initialized_with_timeout(DEFAULT_TIMEOUT)
+        .await?;
+    let start_request_id = mcp
+        .send_thread_start_request(ThreadStartParams {
+            model: Some("venado-only".to_string()),
+            ..Default::default()
+        })
+        .await?;
+    let ThreadStartResponse { thread, .. } =
+        timeout(DEFAULT_TIMEOUT, mcp.read_response(start_request_id)).await??;
+    timeout(
+        DEFAULT_TIMEOUT,
+        mcp.read_stream_until_notification_message("thread/started"),
+    )
+    .await??;
+
+    let settings_request_id = mcp
+        .send_thread_settings_update_request(ThreadSettingsUpdateParams {
+            thread_id: thread.id.clone(),
+            model: Some("not-advertised".to_string()),
+            ..Default::default()
+        })
+        .await?;
+    let settings_error: JSONRPCError = timeout(
+        DEFAULT_TIMEOUT,
+        mcp.read_stream_until_error_message(RequestId::Integer(settings_request_id)),
+    )
+    .await??;
+    assert_eq!(settings_error.error.code, INVALID_REQUEST_ERROR_CODE);
+    assert!(
+        settings_error.error.message.contains("not-advertised"),
+        "unexpected settings error: {}",
+        settings_error.error.message
+    );
+    assert!(
+        timeout(
+            Duration::from_millis(250),
+            mcp.read_stream_until_notification_message("thread/settings/updated"),
+        )
+        .await
+        .is_err(),
+        "rejected settings update should not emit thread/settings/updated"
+    );
+
+    let turn_request_id = mcp
+        .send_turn_start_request(TurnStartParams {
+            thread_id: thread.id,
+            input: vec![V2UserInput::Text {
+                text: "hello".to_string(),
+                text_elements: Vec::new(),
+            }],
+            model: Some("not-advertised".to_string()),
+            ..Default::default()
+        })
+        .await?;
+    let turn_error: JSONRPCError = timeout(
+        DEFAULT_TIMEOUT,
+        mcp.read_stream_until_error_message(RequestId::Integer(turn_request_id)),
+    )
+    .await??;
+    assert_eq!(turn_error.error.code, INVALID_REQUEST_ERROR_CODE);
+    assert!(
+        turn_error.error.message.contains("not-advertised"),
+        "unexpected turn error: {}",
+        turn_error.error.message
+    );
+    assert!(
+        timeout(
+            Duration::from_millis(250),
+            mcp.read_stream_until_notification_message("turn/started"),
+        )
+        .await
+        .is_err(),
+        "rejected turn should not emit turn/started"
+    );
+
+    server.verify().await;
     Ok(())
 }
 
