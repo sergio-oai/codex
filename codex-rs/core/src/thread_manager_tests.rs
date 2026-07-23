@@ -453,6 +453,79 @@ async fn provider_manifest_model_managers_are_scoped_without_changing_regular_re
         Arc::ptr_eq(&startup_manager, &non_manifest_manager),
         "non-manifest provider overrides must keep the pre-feature startup manager"
     );
+
+    let manifest_startup_manager = ThreadManager::with_models_provider_and_home_for_tests(
+        CodexAuth::from_api_key("dummy"),
+        manifest_config.model_provider.clone(),
+        config.codex_home.to_path_buf(),
+        Arc::new(codex_exec_server::EnvironmentManager::default_for_tests()),
+    );
+    let authoritative_startup_manager = manifest_startup_manager.get_models_manager();
+    let ordinary_manager_from_manifest_startup = manifest_startup_manager
+        .state
+        .models_manager_for_config(&config, manifest_startup_manager.auth_manager())
+        .await;
+    assert!(
+        !Arc::ptr_eq(
+            &authoritative_startup_manager,
+            &ordinary_manager_from_manifest_startup
+        ),
+        "ordinary providers must not reuse an authoritative startup manifest manager"
+    );
+    let same_ordinary_manager_from_manifest_startup = manifest_startup_manager
+        .state
+        .models_manager_for_config(&config, manifest_startup_manager.auth_manager())
+        .await;
+    assert!(
+        Arc::ptr_eq(
+            &ordinary_manager_from_manifest_startup,
+            &same_ordinary_manager_from_manifest_startup
+        ),
+        "ordinary providers selected from a manifest startup should reuse their scoped manager"
+    );
+}
+
+#[tokio::test]
+async fn ordinary_manager_selected_from_manifest_startup_does_not_use_shared_disk_cache() {
+    let server = MockServer::start().await;
+    let models_mock = mount_models_once(&server, ModelsResponse { models: vec![] }).await;
+
+    let temp_dir = tempdir().expect("tempdir");
+    let mut ordinary_config = test_config().await;
+    ordinary_config.codex_home = temp_dir.path().join("codex-home").abs();
+    ordinary_config.cwd = ordinary_config.codex_home.abs();
+    std::fs::create_dir_all(&ordinary_config.codex_home).expect("create codex home");
+    ordinary_config.model_catalog = None;
+    ordinary_config.model_provider.base_url = Some(server.uri());
+
+    let mut manifest_provider = ordinary_config.model_provider.clone();
+    manifest_provider.provider_manifest_path = Some("codex/provider-manifest".to_string());
+    let manager = ThreadManager::with_models_provider_and_home_for_tests(
+        CodexAuth::create_dummy_chatgpt_auth_for_testing(),
+        manifest_provider,
+        ordinary_config.codex_home.to_path_buf(),
+        Arc::new(codex_exec_server::EnvironmentManager::default_for_tests()),
+    );
+    let ordinary_manager = manager
+        .state
+        .models_manager_for_config(&ordinary_config, manager.auth_manager())
+        .await;
+
+    let _ = ordinary_manager
+        .list_models(
+            RefreshStrategy::Online,
+            crate::test_support::default_http_client_factory(),
+        )
+        .await;
+
+    assert_eq!(models_mock.requests().len(), 1);
+    assert!(
+        !ordinary_config
+            .codex_home
+            .join("models_cache.json")
+            .exists(),
+        "secondary ordinary managers must not write the unscoped disk cache"
+    );
 }
 
 #[tokio::test]

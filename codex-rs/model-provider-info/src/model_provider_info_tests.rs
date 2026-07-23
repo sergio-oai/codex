@@ -153,6 +153,26 @@ provider_manifest_path = "codex/provider-manifest"
 }
 
 #[test]
+fn test_validate_provider_manifest_path_requires_explicit_base_url() {
+    for base_url in [None, Some(String::new()), Some("   ".to_string())] {
+        let provider = ModelProviderInfo {
+            base_url,
+            provider_manifest_path: Some("codex/provider-manifest".to_string()),
+            ..ModelProviderInfo::default()
+        };
+
+        assert_eq!(
+            provider.validate_provider_manifest_path(),
+            Err("provider_manifest_path requires an explicit non-empty base_url".to_string())
+        );
+        assert_eq!(
+            provider.validate(),
+            Err("provider_manifest_path requires an explicit non-empty base_url".to_string())
+        );
+    }
+}
+
+#[test]
 fn test_validate_provider_manifest_path_rejects_non_relative_paths() {
     for path in [
         "",
@@ -168,6 +188,7 @@ fn test_validate_provider_manifest_path_rejects_non_relative_paths() {
         "codex/manifest#fragment",
     ] {
         let provider = ModelProviderInfo {
+            base_url: Some("https://venado.example/api/gov-v1".to_string()),
             provider_manifest_path: Some(path.to_string()),
             ..ModelProviderInfo::default()
         };

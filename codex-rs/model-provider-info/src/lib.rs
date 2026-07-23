@@ -94,10 +94,10 @@ pub struct ModelProviderInfo {
     pub base_url: Option<String>,
     /// Optional same-origin relative path to a versioned, provider-owned model manifest.
     ///
-    /// When configured, Codex fetches this path relative to `base_url` and
-    /// uses safe model metadata from it as this provider's authoritative
-    /// catalog. Existing providers keep their current `/models` and bundled-
-    /// catalog behavior when the field is unset.
+    /// When configured, Codex fetches this path relative to an explicitly
+    /// configured `base_url` and uses safe model metadata from it as this
+    /// provider's authoritative catalog. Existing providers keep their current
+    /// `/models` and bundled-catalog behavior when the field is unset.
     pub provider_manifest_path: Option<String>,
     /// Environment variable that stores the user's API key for this provider.
     pub env_key: Option<String>,
@@ -229,6 +229,15 @@ impl ModelProviderInfo {
     pub fn validate_provider_manifest_path(&self) -> std::result::Result<(), String> {
         if let Some(path) = self.provider_manifest_path.as_deref() {
             validate_provider_manifest_path(path)?;
+            if self
+                .base_url
+                .as_deref()
+                .is_none_or(|base_url| base_url.trim().is_empty())
+            {
+                return Err(
+                    "provider_manifest_path requires an explicit non-empty base_url".to_string(),
+                );
+            }
         }
         Ok(())
     }

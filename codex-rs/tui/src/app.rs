@@ -492,6 +492,77 @@ fn errors_for_cwd(cwd: &Path, response: &SkillsListResponse) -> Vec<SkillErrorIn
         .unwrap_or_default()
 }
 
+/// Returns whether a locally configured provider has opted into a manifest.
+///
+/// A loaded thread may name a provider that is not present in this TUI's
+/// config (for example, when a remote app server restored it). Treat that as
+/// unknown instead of assuming it is an ordinary provider.
+fn configured_provider_uses_manifest(config: &Config, provider_id: &str) -> Option<bool> {
+    if provider_id.is_empty() {
+        return None;
+    }
+    if provider_id == config.model_provider_id {
+        return Some(config.model_provider.provider_manifest_path.is_some());
+    }
+    config
+        .model_providers
+        .get(provider_id)
+        .map(|provider| provider.provider_manifest_path.is_some())
+}
+
+/// Snapshot of the provider kind that produced the currently displayed
+/// catalog.
+///
+/// Keep this separate from the mutable runtime config: users can edit a
+/// provider definition while the TUI is open, and a same-ID transition from a
+/// manifest provider to an ordinary provider (or vice versa) still needs a
+/// fresh catalog.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ModelCatalogProvenance {
+    KnownOrdinary,
+    KnownManifest,
+    Unknown,
+}
+
+fn model_catalog_provenance_for_provider(
+    config: &Config,
+    provider_id: Option<&str>,
+) -> ModelCatalogProvenance {
+    let uses_manifest =
+        provider_id.and_then(|provider_id| configured_provider_uses_manifest(config, provider_id));
+    match uses_manifest {
+        Some(false) => ModelCatalogProvenance::KnownOrdinary,
+        Some(true) => ModelCatalogProvenance::KnownManifest,
+        None => ModelCatalogProvenance::Unknown,
+    }
+}
+
+/// Whether the active TUI catalog must be reloaded from a loaded thread.
+///
+/// Ordinary local providers historically share the startup catalog, so keep
+/// that no-extra-request behavior when both provider kinds are known and
+/// neither provider opted into manifests. Manifest-backed, unknown, or remote
+/// app-server state cannot safely reuse that process-level catalog.
+fn should_refresh_thread_model_catalog(
+    config: &Config,
+    app_server_state_is_remote: bool,
+    current_catalog_provenance: ModelCatalogProvenance,
+    target_provider_id: Option<&str>,
+) -> bool {
+    if app_server_state_is_remote {
+        return true;
+    }
+
+    !matches!(
+        (
+            current_catalog_provenance,
+            target_provider_id
+                .and_then(|provider_id| configured_provider_uses_manifest(config, provider_id)),
+        ),
+        (ModelCatalogProvenance::KnownOrdinary, Some(false))
+    )
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct SessionSummary {
     usage_line: Option<String>,
@@ -506,6 +577,8 @@ struct InitialHistoryReplayBuffer {
 
 pub(crate) struct App {
     model_catalog: Arc<ModelCatalog>,
+    /// Snapshot of the provider kind that produced `model_catalog`.
+    model_catalog_provenance: ModelCatalogProvenance,
     pub(crate) session_telemetry: SessionTelemetry,
     pub(crate) app_event_tx: AppEventSender,
     pub(crate) chat_widget: ChatWidget,
@@ -842,6 +915,11 @@ impl App {
             model = updated_model;
         }
         let mut model_catalog = Arc::new(ModelCatalog::new(available_models.clone()));
+        let mut model_catalog_provenance =
+            model_catalog_provenance_for_provider(&config, Some(config.model_provider_id.as_str()));
+        // A non-embedded app server can restore provider state that this
+        // process never loaded, so its thread catalogs are always scoped.
+        let app_server_state_is_remote = !app_server.uses_embedded_app_server();
         let feedback_audience = bootstrap.feedback_audience;
         let auth_mode = bootstrap.auth_mode;
         let has_chatgpt_account = bootstrap.has_chatgpt_account;
@@ -941,11 +1019,23 @@ impl App {
                     .resume_thread(config.clone(), target_session.thread_id, model_settings)
                     .await
                     .map_err(|err| session_start_error("resume", &target_session, err))?;
-                let scoped_models = app_server
-                    .refresh_available_models_for_thread(resumed.session.thread_id)
-                    .await
-                    .wrap_err("failed to load models for resumed thread")?;
-                model_catalog = Arc::new(ModelCatalog::new(scoped_models));
+                let should_refresh_catalog = should_refresh_thread_model_catalog(
+                    &config,
+                    app_server_state_is_remote,
+                    model_catalog_provenance,
+                    Some(resumed.session.model_provider_id.as_str()),
+                );
+                if should_refresh_catalog {
+                    let scoped_models = app_server
+                        .refresh_available_models_for_thread(resumed.session.thread_id)
+                        .await
+                        .wrap_err("failed to load models for resumed thread")?;
+                    model_catalog = Arc::new(ModelCatalog::new(scoped_models));
+                    model_catalog_provenance = model_catalog_provenance_for_provider(
+                        &config,
+                        Some(resumed.session.model_provider_id.as_str()),
+                    );
+                }
                 let init = crate::chatwidget::ChatWidgetInit {
                     config: config.clone(),
                     frame_requester: tui.frame_requester(),
@@ -985,11 +1075,23 @@ impl App {
                     .fork_thread(config.clone(), target_session.thread_id)
                     .await
                     .map_err(|err| session_start_error("fork", &target_session, err))?;
-                let scoped_models = app_server
-                    .refresh_available_models_for_thread(forked.session.thread_id)
-                    .await
-                    .wrap_err("failed to load models for forked thread")?;
-                model_catalog = Arc::new(ModelCatalog::new(scoped_models));
+                let should_refresh_catalog = should_refresh_thread_model_catalog(
+                    &config,
+                    app_server_state_is_remote,
+                    model_catalog_provenance,
+                    Some(forked.session.model_provider_id.as_str()),
+                );
+                if should_refresh_catalog {
+                    let scoped_models = app_server
+                        .refresh_available_models_for_thread(forked.session.thread_id)
+                        .await
+                        .wrap_err("failed to load models for forked thread")?;
+                    model_catalog = Arc::new(ModelCatalog::new(scoped_models));
+                    model_catalog_provenance = model_catalog_provenance_for_provider(
+                        &config,
+                        Some(forked.session.model_provider_id.as_str()),
+                    );
+                }
                 let init = crate::chatwidget::ChatWidgetInit {
                     config: config.clone(),
                     frame_requester: tui.frame_requester(),
@@ -1038,6 +1140,7 @@ See the Codex keymap documentation for supported actions and examples."
 
         let mut app = Self {
             model_catalog,
+            model_catalog_provenance,
             session_telemetry: session_telemetry.clone(),
             app_event_tx,
             chat_widget,

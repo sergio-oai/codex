@@ -10,6 +10,7 @@ use core_test_support::responses::ev_function_call_with_namespace;
 use core_test_support::responses::ev_response_created;
 use core_test_support::responses::mount_sse_once;
 use core_test_support::responses::mount_sse_once_match;
+use core_test_support::responses::namespace_child_tool;
 use core_test_support::responses::sse;
 use core_test_support::responses::sse_completed;
 use core_test_support::skip_if_no_network;
@@ -114,6 +115,78 @@ async fn provider_manifest_selects_model_and_omits_unsupported_fast_tier_impl() 
             .iter()
             .all(|request| request.url.path() != "/v1/models"),
         "an opted-in provider manifest should replace the ordinary /models request"
+    );
+
+    server.verify().await;
+    Ok(())
+}
+
+#[test]
+fn provider_manifest_custom_model_without_marker_is_visible_to_multi_agent_v2() -> Result<()> {
+    run_provider_manifest_test(
+        "provider_manifest_custom_model_without_marker_is_visible_to_multi_agent_v2",
+        || {
+            let runtime = tokio::runtime::Builder::new_current_thread()
+                .enable_all()
+                .build()?;
+            runtime.block_on(
+                provider_manifest_custom_model_without_marker_is_visible_to_multi_agent_v2_impl(),
+            )
+        },
+    )
+}
+
+async fn provider_manifest_custom_model_without_marker_is_visible_to_multi_agent_v2_impl()
+-> Result<()> {
+    skip_if_no_network!(Ok(()));
+
+    const MANIFEST_MODEL: &str = "venado-only";
+    const MULTI_AGENT_V2_NAMESPACE: &str = "collaboration";
+
+    let server = MockServer::start().await;
+    Mock::given(method("GET"))
+        .and(path("/v1/codex/provider-manifest"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "schema_version": 1,
+            "models": [{
+                "id": MANIFEST_MODEL,
+                "display_name": "Venado only",
+                "context_window": 32_000,
+                "max_input_tokens": 24_000,
+                "service_tiers": []
+            }]
+        })))
+        .expect(1)
+        .mount(&server)
+        .await;
+    let responses_mock = mount_sse_once(&server, sse_completed("resp-v2-1")).await;
+
+    let mut builder = test_codex().with_config(|config| {
+        config.model = None;
+        config.model_provider.provider_manifest_path = Some("codex/provider-manifest".to_string());
+        config
+            .features
+            .enable(Feature::Collab)
+            .expect("test config should allow feature update");
+        config
+            .features
+            .enable(Feature::MultiAgentV2)
+            .expect("test config should allow feature update");
+        config.multi_agent_v2.expose_spawn_agent_model_overrides = true;
+    });
+    let test = builder.build(&server).await?;
+
+    test.submit_turn("show me the available model overrides")
+        .await?;
+
+    let body = responses_mock.single_request().body_json();
+    let description = namespace_child_tool(&body, MULTI_AGENT_V2_NAMESPACE, "spawn_agent")
+        .and_then(|tool| tool.get("description"))
+        .and_then(serde_json::Value::as_str)
+        .expect("v2 spawn_agent description should be present");
+    assert!(
+        description.contains(MANIFEST_MODEL),
+        "custom manifest model should be visible to v2 spawn_agent: {description:?}"
     );
 
     server.verify().await;

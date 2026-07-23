@@ -81,6 +81,9 @@ fn parses_safe_model_metadata_and_clears_bundled_service_tiers() {
         model.service_tier_for_request(Some("priority".to_string())),
         None
     );
+    // Exact bundled slugs keep their trusted local marker rather than taking
+    // the provider-owned custom-model default.
+    assert_eq!(model.multi_agent_version, None);
     assert!(!ModelPreset::from(model.clone()).supports_fast_mode());
 }
 
@@ -166,14 +169,13 @@ fn preserves_local_bundled_capabilities_without_inheriting_provider_request_shap
 }
 
 #[test]
-fn custom_models_can_explicitly_advertise_multi_agent_compatibility() {
+fn custom_models_default_to_multi_agent_v2_when_marker_is_omitted() {
     let body = serde_json::to_vec(&json!({
         "schema_version": 1,
         "models": [{
             "id": "venado-only",
             "display_name": "Venado only",
             "context_window": 16384,
-            "multi_agent_version": "v2",
             "service_tiers": []
         }]
     }))
@@ -193,6 +195,28 @@ fn custom_models_can_explicitly_advertise_multi_agent_compatibility() {
     assert!(!model.use_responses_lite);
     assert!(!model.supports_parallel_tool_calls);
     assert_eq!(model.tool_mode, None);
+}
+
+#[test]
+fn explicit_manifest_multi_agent_version_overrides_bundled_marker() {
+    let body = serde_json::to_vec(&json!({
+        "schema_version": 1,
+        "models": [{
+            "id": "gpt-5.6-sol",
+            "display_name": "GPT-5.6-Sol on a custom provider",
+            "context_window": 272000,
+            "multi_agent_version": "disabled",
+            "service_tiers": []
+        }]
+    }))
+    .expect("manifest serializes");
+
+    let model = parse_provider_manifest(&body)
+        .expect("explicit marker parses")
+        .pop()
+        .expect("one model");
+
+    assert_eq!(model.multi_agent_version, Some(MultiAgentVersion::Disabled));
 }
 
 #[test]

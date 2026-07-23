@@ -449,6 +449,23 @@ mod tests {
     }
 
     #[test]
+    fn model_provider_proto_rejects_manifest_without_explicit_base_url() {
+        let mut provider = expected_provider();
+        provider.base_url = None;
+        let proto = model_provider_to_proto("local", provider);
+
+        let error = model_provider_from_proto(proto)
+            .expect_err("manifest provider without base_url should be rejected");
+
+        assert_eq!(error.code(), ThreadConfigLoadErrorCode::Parse);
+        assert!(
+            error
+                .to_string()
+                .contains("provider_manifest_path requires an explicit non-empty base_url")
+        );
+    }
+
+    #[test]
     fn model_provider_proto_preserves_non_manifest_validation_timing() {
         let mut provider = expected_provider();
         provider.provider_manifest_path = None;

@@ -271,6 +271,7 @@ pub(crate) struct ThreadManagerState {
     thread_created_tx: broadcast::Sender<ThreadId>,
     auth_manager: Arc<AuthManager>,
     models_manager: SharedModelsManager,
+    startup_provider_uses_manifest: bool,
     models_manager_registry: RwLock<Vec<ModelsManagerEntry>>,
     environment_manager: Arc<EnvironmentManager>,
     skills_service: Arc<SkillsService>,
@@ -292,8 +293,9 @@ pub(crate) struct ThreadManagerState {
 
 /// An opt-in provider-manifest catalog belongs to the effective provider
 /// configuration that fetched it. Ordinary providers intentionally keep the
-/// historical process-wide manager behavior; this registry scopes only the
-/// new manifest-backed managers.
+/// historical process-wide manager behavior unless the process itself started
+/// with an authoritative manifest; this registry scopes manifest-backed
+/// managers and the ordinary managers needed when switching away from one.
 struct ModelsManagerEntry {
     model_provider: ModelProviderInfo,
     model_catalog: Option<ModelsResponse>,
@@ -416,6 +418,10 @@ impl ThreadManager {
                 threads: Arc::new(RwLock::new(HashMap::new())),
                 thread_created_tx,
                 models_manager,
+                startup_provider_uses_manifest: config
+                    .model_provider
+                    .provider_manifest_path
+                    .is_some(),
                 models_manager_registry,
                 environment_manager,
                 skills_service,
@@ -531,6 +537,7 @@ impl ThreadManager {
             state_db.clone(),
         ));
         let agent_graph_store = local_agent_graph_store_from_state_db(state_db.as_ref());
+        let startup_provider_uses_manifest = provider.provider_manifest_path.is_some();
         let models_manager = create_model_provider(provider.clone(), Some(auth_manager.clone()))
             .models_manager(codex_home, /*config_model_catalog*/ None);
         let models_manager_registry = RwLock::new(vec![ModelsManagerEntry {
@@ -545,6 +552,7 @@ impl ThreadManager {
                 threads: Arc::new(RwLock::new(HashMap::new())),
                 thread_created_tx,
                 models_manager,
+                startup_provider_uses_manifest,
                 models_manager_registry,
                 environment_manager,
                 skills_service,
@@ -1198,11 +1206,13 @@ impl ThreadManagerState {
         config: &Config,
         auth_manager: Arc<AuthManager>,
     ) -> SharedModelsManager {
+        let target_uses_manifest = config.model_provider.provider_manifest_path.is_some();
         // Provider-scoped catalogs are an opt-in extension. Preserve the
-        // process-wide manager behavior for every pre-existing configuration
-        // so ordinary provider switches keep their historical cache and auth
-        // semantics when no manifest path is configured.
-        if config.model_provider.provider_manifest_path.is_none() {
+        // process-wide manager behavior when neither side opted in so ordinary
+        // provider switches keep their historical cache and auth semantics.
+        // If the process started from an authoritative manifest, however, an
+        // ordinary target cannot safely reuse that manifest catalog.
+        if !target_uses_manifest && !self.startup_provider_uses_manifest {
             return Arc::clone(&self.models_manager);
         }
 
@@ -1221,11 +1231,11 @@ impl ThreadManagerState {
         // but keeping the critical section small avoids serializing unrelated
         // thread starts if that ever changes.
         //
-        // Manifest-backed providers must not read or overwrite the
-        // process-wide models_cache.json. That cache predates per-thread
-        // provider selection and is not provider-scoped, so an authoritative
-        // manifest manager could otherwise adopt the startup provider's
-        // catalog.
+        // Any manager created on this scoped path must not read or overwrite
+        // the process-wide models_cache.json. Manifest-backed providers are
+        // authoritative, and an ordinary provider selected from a
+        // manifest-backed process is still a secondary provider whose cache
+        // cannot safely share an unscoped file with another provider.
         let provider = create_model_provider(
             config.model_provider.clone(),
             Some(Arc::clone(&auth_manager)),

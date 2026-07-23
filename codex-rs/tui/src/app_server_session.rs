@@ -426,8 +426,9 @@ impl AppServerSession {
     /// Load the catalog for a loaded thread's effective provider.
     ///
     /// `bootstrap()` has to list the process-level provider because no thread exists yet.
-    /// A resumed or forked thread can restore a different provider, so the TUI must make a
-    /// second, thread-scoped request before it builds model- and service-tier-dependent UI.
+    /// A resumed or forked thread can restore a different provider; callers use this
+    /// thread-scoped request when manifest-backed, unknown, or remote provider state cannot
+    /// safely reuse that startup catalog.
     pub(crate) async fn refresh_available_models_for_thread(
         &mut self,
         thread_id: ThreadId,

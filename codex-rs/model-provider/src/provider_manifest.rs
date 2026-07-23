@@ -78,9 +78,10 @@ struct ProviderManifestModel {
     service_tiers: Vec<ProviderManifestServiceTier>,
     /// Local multi-agent compatibility, not a provider wire-format feature.
     ///
-    /// Omitted values can still inherit this one safe capability from a
-    /// bundled model with the same slug. Custom providers otherwise opt in
-    /// explicitly without inheriting OpenAI-only request-shape metadata.
+    /// Omitted values inherit this safe local marker from a bundled model with
+    /// the same slug. Provider-owned IDs default to v2 so an authoritative
+    /// custom catalog remains usable by the current spawn-agent backend without
+    /// inheriting OpenAI-only request-shape metadata.
     #[serde(default)]
     multi_agent_version: Option<MultiAgentVersion>,
 }
@@ -240,12 +241,14 @@ fn to_model_info(
         model.model_messages = None;
     }
     // Multi-agent version is a local tool-compatibility marker, unlike
-    // Responses Lite or other provider-specific wire capabilities. Preserve
-    // it from trusted bundled metadata for known slugs, while allowing a
-    // custom manifest model to opt in explicitly.
-    model.multi_agent_version = manifest_model
-        .multi_agent_version
-        .or_else(|| bundled_model.and_then(|bundled_model| bundled_model.multi_agent_version));
+    // Responses Lite or other provider-specific wire capabilities. Explicit
+    // manifest values win; exact bundled slugs retain their trusted marker;
+    // provider-owned model IDs default to the current v2 backend.
+    model.multi_agent_version = manifest_model.multi_agent_version.or_else(|| {
+        bundled_model.map_or(Some(MultiAgentVersion::V2), |bundled_model| {
+            bundled_model.multi_agent_version
+        })
+    });
     Ok(model)
 }
 

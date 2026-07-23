@@ -459,8 +459,13 @@ impl App {
             return Ok(());
         }
         if !is_replay_only {
-            self.refresh_model_catalog_for_thread(app_server, thread_id)
-                .await?;
+            let target_provider_id = self.loaded_thread_model_provider_id(thread_id).await;
+            self.refresh_model_catalog_for_thread(
+                app_server,
+                thread_id,
+                target_provider_id.as_deref(),
+            )
+            .await?;
         }
         let previous_thread_id = self.active_thread_id;
         self.store_active_thread_receiver().await;
@@ -711,8 +716,13 @@ impl App {
         // user turn by accident. Refresh before tearing down the current
         // widget so a failed scoped catalog request leaves the active thread
         // intact.
-        self.refresh_model_catalog_for_thread(app_server, started.session.thread_id)
-            .await?;
+        let target_provider_id = started.session.model_provider_id.clone();
+        self.refresh_model_catalog_for_thread(
+            app_server,
+            started.session.thread_id,
+            Some(target_provider_id.as_str()),
+        )
+        .await?;
         self.reset_thread_event_state();
         let init = self.chatwidget_init_for_forked_or_resumed_thread(
             tui,
@@ -732,7 +742,25 @@ impl App {
         Ok(())
     }
 
-    /// Refresh the active UI catalog from the loaded thread's effective provider.
+    /// Returns the provider identity already observed for a loaded thread.
+    ///
+    /// A newly attached channel can still be missing its session snapshot. In
+    /// that case callers must treat the provider as unknown and use the
+    /// thread-scoped catalog path.
+    async fn loaded_thread_model_provider_id(&self, thread_id: ThreadId) -> Option<String> {
+        let store = self
+            .thread_event_channels
+            .get(&thread_id)
+            .map(|channel| Arc::clone(&channel.store))?;
+        let store = store.lock().await;
+        store
+            .session
+            .as_ref()
+            .map(|session| session.model_provider_id.clone())
+    }
+
+    /// Refresh the active UI catalog from the loaded thread's effective provider
+    /// when the process-level startup catalog cannot be reused safely.
     ///
     /// A resumed, forked, or selected child thread may use a provider other
     /// than the process-level startup provider. Keep that active-thread state
@@ -742,12 +770,24 @@ impl App {
         &mut self,
         app_server: &mut AppServerSession,
         thread_id: ThreadId,
+        target_provider_id: Option<&str>,
     ) -> Result<()> {
+        if !should_refresh_thread_model_catalog(
+            &self.config,
+            !app_server.uses_embedded_app_server(),
+            self.model_catalog_provenance,
+            target_provider_id,
+        ) {
+            return Ok(());
+        }
+        let catalog_provenance =
+            model_catalog_provenance_for_provider(&self.config, target_provider_id);
         let scoped_models = app_server
             .refresh_available_models_for_thread(thread_id)
             .await
             .wrap_err_with(|| format!("failed to load models for thread {thread_id}"))?;
         self.model_catalog = Arc::new(ModelCatalog::new(scoped_models));
+        self.model_catalog_provenance = catalog_provenance;
         Ok(())
     }
 

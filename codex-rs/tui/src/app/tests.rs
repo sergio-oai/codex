@@ -4619,6 +4619,10 @@ async fn make_test_app() -> App {
 
     App {
         model_catalog: chat_widget.model_catalog(),
+        model_catalog_provenance: model_catalog_provenance_for_provider(
+            &config,
+            Some(config.model_provider_id.as_str()),
+        ),
         session_telemetry,
         app_event_tx,
         chat_widget,
@@ -4686,6 +4690,10 @@ async fn make_test_app_with_channels() -> (
     (
         App {
             model_catalog: chat_widget.model_catalog(),
+            model_catalog_provenance: model_catalog_provenance_for_provider(
+                &config,
+                Some(config.model_provider_id.as_str()),
+            ),
             session_telemetry,
             app_event_tx,
             chat_widget,
