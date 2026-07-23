@@ -596,16 +596,19 @@ impl Session {
             // parent and child already share one.
             codex_models_manager::manager::RefreshStrategy::OnlineIfUncached
         };
-        if config.model.is_none()
+        let available_models = if config.model.is_none()
             || !matches!(
                 refresh_strategy,
                 codex_models_manager::manager::RefreshStrategy::Offline
+            ) {
+            Some(
+                models_manager
+                    .list_models(refresh_strategy, config.http_client_factory())
+                    .await,
             )
-        {
-            let _ = models_manager
-                .list_models(refresh_strategy, config.http_client_factory())
-                .await;
-        }
+        } else {
+            None
+        };
         let model = models_manager
             .get_default_model(
                 &config.model,
@@ -614,8 +617,11 @@ impl Session {
                 config.http_client_factory(),
             )
             .await;
-        if model.is_empty()
-            && let Some(path) = config.model_provider.provider_manifest_path.as_deref()
+        if let Some(path) = config.model_provider.provider_manifest_path.as_deref()
+            && (model.is_empty()
+                || available_models
+                    .as_ref()
+                    .is_some_and(std::vec::Vec::is_empty))
         {
             return Err(CodexErr::Fatal(format!(
                 "provider manifest {path} did not yield an available model; verify the manifest endpoint and try again"

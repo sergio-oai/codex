@@ -256,16 +256,24 @@ impl CatalogRequestProcessor {
         params: ModelListParams,
     ) -> Result<ModelListResponse, JSONRPCErrorError> {
         let ModelListParams {
+            thread_id,
             limit,
             cursor,
             include_hidden,
         } = params;
+        let thread_id = thread_id
+            .as_deref()
+            .map(ThreadId::from_string)
+            .transpose()
+            .map_err(|err| invalid_request(format!("invalid thread id: {err}")))?;
         let models = supported_models(
             thread_manager,
+            thread_id,
             include_hidden.unwrap_or(false),
             http_client_factory,
         )
-        .await;
+        .await
+        .map_err(|err| invalid_request(format!("failed to list models: {err}")))?;
         let total = models.len();
 
         if total == 0 {

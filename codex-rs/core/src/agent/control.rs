@@ -18,6 +18,8 @@ use crate::session_prefix::format_subagent_notification_message;
 use crate::thread_manager::ResumeThreadWithHistoryOptions;
 use crate::thread_manager::ThreadManagerState;
 use crate::thread_rollout_truncation::truncate_rollout_to_last_n_fork_turns;
+use codex_login::AuthManager;
+use codex_models_manager::manager::SharedModelsManager;
 use codex_protocol::AgentPath;
 use codex_protocol::SessionId;
 use codex_protocol::ThreadId;
@@ -577,6 +579,15 @@ impl AgentControl {
         self.manager
             .upgrade()
             .ok_or_else(|| CodexErr::UnsupportedOperation("thread manager dropped".to_string()))
+    }
+
+    pub(crate) async fn models_manager_for_config(
+        &self,
+        config: &Config,
+        auth_manager: Arc<AuthManager>,
+    ) -> CodexResult<SharedModelsManager> {
+        let state = self.upgrade()?;
+        Ok(state.models_manager_for_config(config, auth_manager).await)
     }
 
     async fn inherited_environments_for_source(

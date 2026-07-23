@@ -645,6 +645,32 @@ impl ThreadManager {
             .await
     }
 
+    /// List the catalog for a loaded thread's effective provider.
+    ///
+    /// App-server threads can override their provider independently. Keep the
+    /// process-level list API above for callers that intentionally want the
+    /// startup provider, and make provider scope explicit for thread-aware
+    /// clients.
+    pub async fn list_models_for_thread(
+        &self,
+        thread_id: ThreadId,
+        refresh_strategy: RefreshStrategy,
+        http_client_factory: codex_http_client::HttpClientFactory,
+    ) -> CodexResult<Vec<ModelPreset>> {
+        let thread = self.get_thread(thread_id).await?;
+        let config = thread.config().await;
+        let models_manager = self
+            .state
+            .models_manager_for_config(
+                config.as_ref(),
+                Arc::clone(&thread.session.services.auth_manager),
+            )
+            .await;
+        Ok(models_manager
+            .list_models(refresh_strategy, http_client_factory)
+            .await)
+    }
+
     pub fn list_collaboration_modes(&self) -> Vec<CollaborationModeMask> {
         self.state.models_manager.list_collaboration_modes()
     }
@@ -1167,7 +1193,7 @@ impl ThreadManagerState {
         self.agent_graph_store.clone()
     }
 
-    async fn models_manager_for_config(
+    pub(crate) async fn models_manager_for_config(
         &self,
         config: &Config,
         auth_manager: Arc<AuthManager>,

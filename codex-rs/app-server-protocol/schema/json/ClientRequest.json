@@ -1969,6 +1969,13 @@
             "integer",
             "null"
           ]
+        },
+        "threadId": {
+          "description": "Optional loaded thread whose effective provider catalog should be listed.\n\nWhen omitted, model/list preserves its existing process-level behavior and lists the startup provider catalog.",
+          "type": [
+            "string",
+            "null"
+          ]
         }
       },
       "type": "object"

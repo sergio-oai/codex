@@ -118,19 +118,22 @@ async fn provider_manifest_selects_model_and_omits_unsupported_fast_tier_impl() 
 }
 
 #[test]
-fn provider_manifest_outage_without_configured_model_fails_startup() -> Result<()> {
+fn provider_manifest_outage_fails_startup_with_or_without_configured_model() -> Result<()> {
     run_provider_manifest_test(
-        "provider_manifest_outage_without_configured_model_fails_startup",
+        "provider_manifest_outage_fails_startup_with_or_without_configured_model",
         || {
             let runtime = tokio::runtime::Builder::new_current_thread()
                 .enable_all()
                 .build()?;
-            runtime.block_on(provider_manifest_outage_without_configured_model_fails_startup_impl())
+            runtime.block_on(
+                provider_manifest_outage_fails_startup_with_or_without_configured_model_impl(),
+            )
         },
     )
 }
 
-async fn provider_manifest_outage_without_configured_model_fails_startup_impl() -> Result<()> {
+async fn provider_manifest_outage_fails_startup_with_or_without_configured_model_impl() -> Result<()>
+{
     skip_if_no_network!(Ok(()));
 
     let server = MockServer::start().await;
@@ -140,25 +143,28 @@ async fn provider_manifest_outage_without_configured_model_fails_startup_impl() 
         .mount(&server)
         .await;
 
-    let mut builder = test_codex().with_config(|config| {
-        config.model = None;
-        config.model_provider.provider_manifest_path = Some("codex/provider-manifest".to_string());
-    });
-    let error = match builder.build(&server).await {
-        Ok(_) => {
-            return Err(anyhow::anyhow!(
-                "session startup unexpectedly succeeded without a manifest catalog"
-            ));
-        }
-        Err(error) => error,
-    };
+    for configured_model in [None, Some("d8")] {
+        let mut builder = test_codex().with_config(move |config| {
+            config.model = configured_model.map(str::to_string);
+            config.model_provider.provider_manifest_path =
+                Some("codex/provider-manifest".to_string());
+        });
+        let error = match builder.build(&server).await {
+            Ok(_) => {
+                return Err(anyhow::anyhow!(
+                    "session startup unexpectedly succeeded without a manifest catalog"
+                ));
+            }
+            Err(error) => error,
+        };
 
-    assert!(
-        error
-            .to_string()
-            .contains("provider manifest codex/provider-manifest did not yield an available model"),
-        "unexpected startup error: {error:#}"
-    );
+        assert!(
+            error.to_string().contains(
+                "provider manifest codex/provider-manifest did not yield an available model"
+            ),
+            "unexpected startup error: {error:#}"
+        );
+    }
 
     let requests = server
         .received_requests()
@@ -167,7 +173,9 @@ async fn provider_manifest_outage_without_configured_model_fails_startup_impl() 
     assert!(
         requests
             .iter()
-            .any(|request| request.url.path() == "/v1/codex/provider-manifest"),
+            .filter(|request| request.url.path() == "/v1/codex/provider-manifest")
+            .count()
+            >= 1,
         "startup should try the configured provider manifest before failing"
     );
 
@@ -212,7 +220,12 @@ async fn spawned_child_role_fetches_unloaded_provider_manifest_impl() -> Result<
                 "max_input_tokens": 24_000,
                 "default_reasoning_effort": "medium",
                 "supported_reasoning_efforts": ["medium"],
-                "service_tiers": []
+                "multi_agent_version": "v1",
+                "service_tiers": [{
+                    "id": "priority",
+                    "name": "Fast",
+                    "description": "Fast provider tier"
+                }]
             }]
         })))
         .mount(&server)
@@ -221,6 +234,7 @@ async fn spawned_child_role_fetches_unloaded_provider_manifest_impl() -> Result<
     let spawn_args = serde_json::to_string(&json!({
         "message": CHILD_PROMPT,
         "agent_type": ROLE_NAME,
+        "service_tier": "priority",
     }))?;
     mount_sse_once_match(
         &server,
@@ -340,6 +354,7 @@ provider_manifest_path = "codex/provider-manifest"
         .await;
     assert_eq!(child_snapshot.model, MANIFEST_MODEL);
     assert_eq!(child_snapshot.model_provider_id, "venado");
+    assert_eq!(child_snapshot.service_tier.as_deref(), Some("priority"));
     let requests_after_spawn = server
         .received_requests()
         .await
@@ -353,6 +368,10 @@ provider_manifest_path = "codex/provider-manifest"
     assert_eq!(
         child_request.body_json()["model"].as_str(),
         Some(MANIFEST_MODEL)
+    );
+    assert_eq!(
+        child_request.body_json()["service_tier"].as_str(),
+        Some("priority")
     );
 
     server.verify().await;

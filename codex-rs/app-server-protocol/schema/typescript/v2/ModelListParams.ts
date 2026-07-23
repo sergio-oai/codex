@@ -4,6 +4,13 @@
 
 export type ModelListParams = {
 /**
+ * Optional loaded thread whose effective provider catalog should be listed.
+ *
+ * When omitted, model/list preserves its existing process-level behavior
+ * and lists the startup provider catalog.
+ */
+threadId?: string | null,
+/**
  * Opaque pagination cursor returned by a previous call.
  */
 cursor?: string | null,

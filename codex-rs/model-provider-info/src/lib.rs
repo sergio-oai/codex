@@ -159,9 +159,7 @@ pub struct ModelProviderAwsAuthInfo {
 
 impl ModelProviderInfo {
     pub fn validate(&self) -> std::result::Result<(), String> {
-        if let Some(path) = self.provider_manifest_path.as_deref() {
-            validate_provider_manifest_path(path)?;
-        }
+        self.validate_provider_manifest_path()?;
 
         if self.aws.is_some() {
             if self.supports_websockets {
@@ -220,6 +218,19 @@ impl ModelProviderInfo {
                 conflicts.join(", ")
             ))
         }
+    }
+
+    /// Validate only the opt-in provider-manifest extension.
+    ///
+    /// Remote thread configuration reconstruction historically deferred the
+    /// provider's broader auth/config validation to later config loading. Keep
+    /// that behavior intact while still rejecting unsafe manifest paths at the
+    /// protobuf boundary.
+    pub fn validate_provider_manifest_path(&self) -> std::result::Result<(), String> {
+        if let Some(path) = self.provider_manifest_path.as_deref() {
+            validate_provider_manifest_path(path)?;
+        }
+        Ok(())
     }
 
     fn build_header_map(&self) -> CodexResult<HeaderMap> {

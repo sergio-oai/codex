@@ -9,6 +9,7 @@ use crate::tools::context::FunctionToolOutput;
 use crate::tools::context::ToolOutput;
 use crate::tools::context::ToolPayload;
 use codex_models_manager::manager::RefreshStrategy;
+use codex_models_manager::manager::SharedModelsManager;
 use codex_protocol::AgentPath;
 use codex_protocol::ThreadId;
 use codex_protocol::error::CodexErr;
@@ -23,6 +24,7 @@ use codex_protocol::protocol::SubAgentSource;
 use codex_protocol::user_input::UserInput;
 use serde::Serialize;
 use serde_json::Value as JsonValue;
+use std::sync::Arc;
 
 /// Minimum wait timeout to prevent tight polling loops from burning CPU.
 pub(crate) const MIN_WAIT_TIMEOUT_MS: i64 = DEFAULT_MULTI_AGENT_V2_MIN_WAIT_TIMEOUT_MS;
@@ -320,9 +322,16 @@ pub(crate) async fn apply_spawn_agent_service_tier(
             "spawn_agent could not resolve the child model for service tier validation".to_string(),
         )
     })?;
-    let model_info = session
-        .services
-        .models_manager
+    let models_manager = models_manager_for_spawn_config(session, config).await?;
+    if config.model_provider.provider_manifest_path.is_some() {
+        let _ = models_manager
+            .list_models(
+                RefreshStrategy::OnlineIfUncached,
+                config.http_client_factory(),
+            )
+            .await;
+    }
+    let model_info = models_manager
         .get_model_info(model.as_str(), &config.to_models_manager_config())
         .await;
 
@@ -356,6 +365,7 @@ pub(crate) async fn apply_spawn_agent_service_tier(
 
 pub(crate) async fn apply_spawn_agent_role(
     session: &Session,
+    turn: &TurnContext,
     config: &mut Config,
     role_name: Option<&str>,
 ) -> Result<(), FunctionCallError> {
@@ -364,7 +374,32 @@ pub(crate) async fn apply_spawn_agent_role(
     apply_role_to_config(config, role_name)
         .await
         .map_err(FunctionCallError::RespondToModel)?;
-    if config.model == previous_model && config.model_reasoning_effort == previous_reasoning_effort
+    let provider_changed = config.model_provider != turn.config.model_provider
+        || config.model_catalog != turn.config.model_catalog;
+    let scoped_models_manager = if provider_changed {
+        Some(models_manager_for_spawn_config(session, config).await?)
+    } else {
+        None
+    };
+    let models_manager = scoped_models_manager
+        .as_ref()
+        .unwrap_or(&session.services.models_manager);
+    let uses_provider_manifest = config.model_provider.provider_manifest_path.is_some();
+    if uses_provider_manifest {
+        let available_models = models_manager
+            .list_models(
+                RefreshStrategy::OnlineIfUncached,
+                config.http_client_factory(),
+            )
+            .await;
+        if let Some(model) = config.model.as_deref() {
+            find_spawn_agent_model_name(&available_models, model, turn.multi_agent_version)?;
+        }
+    }
+
+    if config.model == previous_model
+        && config.model_reasoning_effort == previous_reasoning_effort
+        && !provider_changed
     {
         return Ok(());
     }
@@ -378,12 +413,15 @@ pub(crate) async fn apply_spawn_agent_role(
                 .to_string(),
         )
     })?;
-    let model_info = session
-        .services
-        .models_manager
+    let model_info = models_manager
         .get_model_info(&model, &config.to_models_manager_config())
         .await;
     if model_info.used_fallback_model_metadata {
+        if uses_provider_manifest {
+            return Err(FunctionCallError::RespondToModel(format!(
+                "Unknown model {model} for spawn_agent."
+            )));
+        }
         return Ok(());
     }
 
@@ -392,6 +430,18 @@ pub(crate) async fn apply_spawn_agent_role(
         &model_info.supported_reasoning_levels,
         &reasoning_effort,
     )
+}
+
+async fn models_manager_for_spawn_config(
+    session: &Session,
+    config: &Config,
+) -> Result<SharedModelsManager, FunctionCallError> {
+    session
+        .services
+        .agent_control
+        .models_manager_for_config(config, Arc::clone(&session.services.auth_manager))
+        .await
+        .map_err(|err| FunctionCallError::RespondToModel(format!("collab tool failed: {err}")))
 }
 
 fn find_spawn_agent_model_name(

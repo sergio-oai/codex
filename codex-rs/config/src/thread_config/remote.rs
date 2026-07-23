@@ -192,7 +192,7 @@ fn model_provider_from_proto(
         requires_openai_auth: provider.requires_openai_auth,
         supports_websockets: provider.supports_websockets,
     };
-    info.validate().map_err(|message| {
+    info.validate_provider_manifest_path().map_err(|message| {
         parse_error(format!(
             "remote thread config returned invalid model provider {id}: {message}"
         ))
@@ -446,6 +446,19 @@ mod tests {
 
         assert_eq!(error.code(), ThreadConfigLoadErrorCode::Parse);
         assert!(error.to_string().contains("provider_manifest_path must be"));
+    }
+
+    #[test]
+    fn model_provider_proto_preserves_non_manifest_validation_timing() {
+        let mut provider = expected_provider();
+        provider.provider_manifest_path = None;
+        provider.env_key = Some("LEGACY_TOKEN".to_string());
+        let proto = model_provider_to_proto("local", provider.clone());
+
+        let (_, actual) =
+            model_provider_from_proto(proto).expect("non-manifest provider should reconstruct");
+
+        assert_eq!(actual, provider);
     }
 
     fn proto_sources() -> Vec<proto::ThreadConfigSource> {

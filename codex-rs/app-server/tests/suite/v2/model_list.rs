@@ -15,6 +15,7 @@ use codex_app_server_protocol::ModelServiceTier;
 use codex_app_server_protocol::ModelUpgradeInfo;
 use codex_app_server_protocol::ReasoningEffortOption;
 use codex_app_server_protocol::RequestId;
+use codex_app_server_protocol::ThreadStartParams;
 use codex_config::types::AuthCredentialsStoreMode;
 use codex_protocol::openai_models::ModelInfo;
 use codex_protocol::openai_models::ModelPreset;
@@ -111,6 +112,7 @@ async fn list_models_returns_all_models_with_large_limit() -> Result<()> {
         .request(|request_id| ClientRequest::ModelList {
             request_id,
             params: ModelListParams {
+                thread_id: None,
                 limit: Some(100),
                 cursor: None,
                 include_hidden: None,
@@ -141,6 +143,7 @@ async fn list_models_includes_hidden_models() -> Result<()> {
         .request(|request_id| ClientRequest::ModelList {
             request_id,
             params: ModelListParams {
+                thread_id: None,
                 limit: Some(100),
                 cursor: None,
                 include_hidden: Some(true),
@@ -223,6 +226,7 @@ openai_base_url = "{server_uri}/v1"
         .request(|request_id| ClientRequest::ModelList {
             request_id,
             params: ModelListParams {
+                thread_id: None,
                 limit: Some(100),
                 cursor: None,
                 include_hidden: None,
@@ -311,6 +315,7 @@ provider_manifest_path = "codex/provider-manifest"
         .request(|request_id| ClientRequest::ModelList {
             request_id,
             params: ModelListParams {
+                thread_id: None,
                 limit: Some(100),
                 cursor: None,
                 include_hidden: None,
@@ -346,6 +351,117 @@ provider_manifest_path = "codex/provider-manifest"
 }
 
 #[tokio::test]
+async fn list_models_can_scope_catalog_to_loaded_thread_provider() -> Result<()> {
+    let server = MockServer::start().await;
+    Mock::given(method("GET"))
+        .and(path("/v1/codex/provider-manifest"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "schema_version": 1,
+            "models": [{
+                "id": "venado-only",
+                "display_name": "Venado only",
+                "description": "Only advertised by the thread provider manifest",
+                "context_window": 32_000,
+                "max_input_tokens": 24_000,
+                "default_reasoning_effort": "medium",
+                "supported_reasoning_efforts": ["medium"],
+                "service_tiers": []
+            }]
+        })))
+        .expect(1)
+        .mount(&server)
+        .await;
+
+    let codex_home = TempDir::new()?;
+    write_models_cache(codex_home.path())?;
+    std::fs::write(
+        codex_home.path().join("config.toml"),
+        format!(
+            r#"
+model_provider = "openai"
+
+[model_providers.venado]
+name = "Venado"
+base_url = "{}/v1"
+experimental_bearer_token = "venado-test-token"
+wire_api = "responses"
+provider_manifest_path = "codex/provider-manifest"
+"#,
+            server.uri()
+        ),
+    )?;
+
+    let mut mcp = TestAppServer::builder()
+        .with_codex_home(codex_home.path())
+        .build_initialized()
+        .await?;
+    let thread = mcp
+        .start_thread(ThreadStartParams {
+            model_provider: Some("venado".to_string()),
+            allow_provider_model_fallback: true,
+            ..Default::default()
+        })
+        .await?;
+
+    let scoped: ModelListResponse = mcp
+        .request(|request_id| ClientRequest::ModelList {
+            request_id,
+            params: ModelListParams {
+                thread_id: Some(thread.thread.id.clone()),
+                limit: Some(100),
+                cursor: None,
+                include_hidden: None,
+            },
+        })
+        .await?;
+    assert_eq!(
+        scoped
+            .data
+            .iter()
+            .map(|model| model.id.as_str())
+            .collect::<Vec<_>>(),
+        vec!["venado-only"]
+    );
+
+    let unscoped: ModelListResponse = mcp
+        .request(|request_id| ClientRequest::ModelList {
+            request_id,
+            params: ModelListParams {
+                thread_id: None,
+                limit: Some(100),
+                cursor: None,
+                include_hidden: None,
+            },
+        })
+        .await?;
+    assert!(
+        unscoped.data.iter().all(|model| model.id != "venado-only"),
+        "unscoped model/list should keep using the startup provider catalog"
+    );
+
+    let requests = server
+        .received_requests()
+        .await
+        .expect("mock server should capture requests");
+    assert_eq!(
+        requests
+            .iter()
+            .filter(|request| request.url.path() == "/v1/codex/provider-manifest")
+            .count(),
+        1,
+        "the thread-scoped catalog should reuse the manifest loaded by thread/start"
+    );
+    assert!(
+        requests
+            .iter()
+            .all(|request| request.url.path() != "/v1/models"),
+        "the manifest provider should not fall back to /models"
+    );
+    server.verify().await;
+    Ok(())
+}
+
+#[tokio::test]
 async fn list_models_pagination_works() -> Result<()> {
     let codex_home = TempDir::new()?;
     write_models_cache(codex_home.path())?;
@@ -367,6 +483,7 @@ async fn list_models_pagination_works() -> Result<()> {
             .request(|request_id| ClientRequest::ModelList {
                 request_id,
                 params: ModelListParams {
+                    thread_id: None,
                     limit: Some(1),
                     cursor: cursor.clone(),
                     include_hidden: None,
@@ -403,6 +520,7 @@ async fn list_models_rejects_invalid_cursor() -> Result<()> {
 
     let request_id = mcp
         .send_list_models_request(ModelListParams {
+            thread_id: None,
             limit: None,
             cursor: Some("invalid".to_string()),
             include_hidden: None,

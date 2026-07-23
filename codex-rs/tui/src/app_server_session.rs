@@ -312,6 +312,7 @@ impl AppServerSession {
                     .request_typed::<ModelListResponse>(ClientRequest::ModelList {
                         request_id: model_request_id,
                         params: ModelListParams {
+                            thread_id: None,
                             cursor: None,
                             limit: None,
                             include_hidden: Some(true),

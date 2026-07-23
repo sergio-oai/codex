@@ -41,6 +41,12 @@ pub struct ModelProviderCapabilitiesReadResponse {
 #[serde(rename_all = "camelCase")]
 #[ts(export_to = "v2/")]
 pub struct ModelListParams {
+    /// Optional loaded thread whose effective provider catalog should be listed.
+    ///
+    /// When omitted, model/list preserves its existing process-level behavior
+    /// and lists the startup provider catalog.
+    #[ts(optional = nullable)]
+    pub thread_id: Option<String>,
     /// Opaque pagination cursor returned by a previous call.
     #[ts(optional = nullable)]
     pub cursor: Option<String>,

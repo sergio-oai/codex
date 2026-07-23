@@ -1,3 +1,4 @@
+use codex_protocol::openai_models::InputModality;
 use codex_protocol::openai_models::ModelPreset;
 use codex_protocol::openai_models::ModelVisibility;
 use codex_protocol::openai_models::ReasoningEffort;
@@ -61,6 +62,7 @@ fn parses_safe_model_metadata_and_clears_bundled_service_tiers() {
     assert_eq!(model.upgrade, None);
     assert_eq!(model.auto_review_model_override, None);
     assert_eq!(model.model_messages, None);
+    assert_eq!(model.input_modalities, vec![InputModality::Text]);
     assert_ne!(model.base_instructions, "do not trust remote instructions");
     assert_eq!(
         model.service_tier_for_request(Some("priority".to_string())),
@@ -137,6 +139,91 @@ fn custom_models_can_explicitly_advertise_multi_agent_compatibility() {
     assert!(!model.use_responses_lite);
     assert!(!model.supports_parallel_tool_calls);
     assert_eq!(model.tool_mode, None);
+}
+
+#[test]
+fn defaults_to_text_only_and_requires_explicit_safe_input_modalities() {
+    let explicit_modalities = serde_json::to_vec(&json!({
+        "schema_version": 1,
+        "models": [{
+            "id": "venado-vision",
+            "display_name": "Venado vision",
+            "input_modalities": ["text", "image"],
+            "service_tiers": []
+        }]
+    }))
+    .expect("manifest serializes");
+    let duplicate_modalities = serde_json::to_vec(&json!({
+        "schema_version": 1,
+        "models": [{
+            "id": "venado-vision",
+            "display_name": "Venado vision",
+            "input_modalities": ["text", "image", "image"],
+            "service_tiers": []
+        }]
+    }))
+    .expect("manifest serializes");
+    let image_only = serde_json::to_vec(&json!({
+        "schema_version": 1,
+        "models": [{
+            "id": "venado-vision",
+            "display_name": "Venado vision",
+            "input_modalities": ["image"],
+            "service_tiers": []
+        }]
+    }))
+    .expect("manifest serializes");
+
+    let model = parse_provider_manifest(&explicit_modalities)
+        .expect("explicit modalities parse")
+        .pop()
+        .expect("one model");
+    assert_eq!(
+        model.input_modalities,
+        vec![InputModality::Text, InputModality::Image]
+    );
+    assert!(
+        parse_provider_manifest(&duplicate_modalities)
+            .expect_err("duplicate modalities should fail")
+            .contains("duplicate input modality")
+    );
+    assert!(
+        parse_provider_manifest(&image_only)
+            .expect_err("textless model should fail")
+            .contains("must support text input")
+    );
+}
+
+#[test]
+fn derives_manifest_service_tier_command_names_locally() {
+    let body = serde_json::to_vec(&json!({
+        "schema_version": 1,
+        "models": [{
+            "id": "venado-tiered",
+            "display_name": "Venado tiered",
+            "service_tiers": [
+                {
+                    "id": "priority",
+                    "name": "clear",
+                    "description": "Canonical fast tier"
+                },
+                {
+                    "id": "custom",
+                    "name": "fast",
+                    "description": "Provider-specific tier"
+                }
+            ]
+        }]
+    }))
+    .expect("manifest serializes");
+
+    let model = parse_provider_manifest(&body)
+        .expect("manifest parses")
+        .pop()
+        .expect("one model");
+
+    assert_eq!(model.service_tiers[0].name, "fast");
+    assert_eq!(model.service_tiers[1].name, "tier-custom");
 }
 
 #[test]

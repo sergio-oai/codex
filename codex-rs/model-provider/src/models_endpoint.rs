@@ -35,6 +35,7 @@ use tokio::time::timeout;
 
 use crate::auth::agent_identity_telemetry;
 use crate::auth::resolve_provider_auth;
+use crate::provider_manifest::MAX_PROVIDER_MANIFEST_BYTES;
 use crate::provider_manifest::parse_provider_manifest;
 
 const MODELS_REFRESH_TIMEOUT: Duration = Duration::from_secs(5);
@@ -125,7 +126,12 @@ impl OpenAiModelsEndpoint {
                 .with_telemetry(Some(request_telemetry));
             if uses_provider_manifest {
                 let (body, etag) = client
-                    .fetch_model_metadata(&request_path, request_url, HeaderMap::new())
+                    .fetch_model_metadata_limited(
+                        &request_path,
+                        request_url,
+                        HeaderMap::new(),
+                        MAX_PROVIDER_MANIFEST_BYTES,
+                    )
                     .await
                     .map_err(map_api_error)?;
                 let models = parse_provider_manifest(&body).map_err(CodexErr::InvalidRequest)?;

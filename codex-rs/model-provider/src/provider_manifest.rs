@@ -3,7 +3,9 @@ use std::collections::HashSet;
 use codex_models_manager::bundled_models_response;
 use codex_models_manager::model_info::BASE_INSTRUCTIONS;
 use codex_protocol::config_types::ReasoningSummary;
+use codex_protocol::config_types::ServiceTier;
 use codex_protocol::openai_models::ConfigShellToolType;
+use codex_protocol::openai_models::InputModality;
 use codex_protocol::openai_models::ModelInfo;
 use codex_protocol::openai_models::ModelServiceTier;
 use codex_protocol::openai_models::ModelVisibility;
@@ -11,7 +13,6 @@ use codex_protocol::openai_models::ReasoningEffort;
 use codex_protocol::openai_models::ReasoningEffortPreset;
 use codex_protocol::openai_models::TruncationPolicyConfig;
 use codex_protocol::openai_models::WebSearchToolType;
-use codex_protocol::openai_models::default_input_modalities;
 use codex_protocol::protocol::MultiAgentVersion;
 use serde::Deserialize;
 
@@ -19,7 +20,7 @@ const SUPPORTED_SCHEMA_VERSION: u32 = 1;
 // Provider manifests are fetched from an opt-in remote endpoint. Keep both
 // parsing work and any catalog data that can later reach model-visible tool
 // descriptions bounded independently of the HTTP client's response limits.
-const MAX_PROVIDER_MANIFEST_BYTES: usize = 256 * 1024;
+pub(crate) const MAX_PROVIDER_MANIFEST_BYTES: usize = 256 * 1024;
 const MAX_PROVIDER_MANIFEST_MODELS: usize = 128;
 // spawn_agent exposes at most five picker-visible models. Keep the aggregate
 // manifest-controlled part of that tool description comfortably below one
@@ -33,6 +34,7 @@ const MAX_SERVICE_TIERS_PER_MODEL: usize = 4;
 const MAX_SERVICE_TIER_ID_BYTES: usize = 32;
 const MAX_SERVICE_TIER_NAME_BYTES: usize = 128;
 const MAX_SERVICE_TIER_DESCRIPTION_BYTES: usize = 256;
+const MAX_INPUT_MODALITIES_PER_MODEL: usize = 3;
 // Keep manifest-provided token limits in the range that downstream code can
 // safely multiply while deriving compaction thresholds.
 const MAX_SAFE_MODEL_TOKEN_LIMIT: i64 = i64::MAX / 9;
@@ -64,6 +66,10 @@ struct ProviderManifestModel {
     supported_reasoning_efforts: Vec<ReasoningEffort>,
     #[serde(default)]
     supports_personality: bool,
+    /// Modalities accepted by this provider model. Omitted v1 manifests are
+    /// text-only by default; image/audio support must be advertised explicitly.
+    #[serde(default = "default_provider_manifest_input_modalities")]
+    input_modalities: Vec<InputModality>,
     #[serde(default)]
     service_tiers: Vec<ProviderManifestServiceTier>,
     /// Local multi-agent compatibility, not a provider wire-format feature.
@@ -144,6 +150,7 @@ fn to_model_info(
     }
     validate_reasoning_efforts(&manifest_model)?;
     validate_service_tiers(&manifest_model)?;
+    validate_input_modalities(&manifest_model)?;
 
     let context_window = positive_limit("context_window", manifest_model.context_window)?;
     let max_input_tokens = positive_limit("max_input_tokens", manifest_model.max_input_tokens)?;
@@ -204,6 +211,7 @@ fn to_model_info(
         .map(to_service_tier)
         .collect::<Result<Vec<_>, _>>()?;
     model.default_service_tier = None;
+    model.input_modalities = manifest_model.input_modalities;
     // A provider-owned catalog should not inherit OpenAI-only lifecycle UX or
     // route a helper request to a model that the provider did not advertise.
     model.availability_nux = None;
@@ -272,7 +280,7 @@ fn safe_provider_manifest_model_info(slug: &str, bundled_model: Option<&ModelInf
         comp_hash: None,
         effective_context_window_percent: 95,
         experimental_supported_tools: Vec::new(),
-        input_modalities: default_input_modalities(),
+        input_modalities: vec![InputModality::Text],
         used_fallback_model_metadata: false,
         supports_search_tool: false,
         use_responses_lite: false,
@@ -363,6 +371,41 @@ fn validate_service_tiers(manifest_model: &ProviderManifestModel) -> Result<(), 
     Ok(())
 }
 
+fn default_provider_manifest_input_modalities() -> Vec<InputModality> {
+    vec![InputModality::Text]
+}
+
+fn validate_input_modalities(manifest_model: &ProviderManifestModel) -> Result<(), String> {
+    if manifest_model.input_modalities.is_empty() {
+        return Err(format!(
+            "provider manifest model {} must contain at least one input modality",
+            manifest_model.id
+        ));
+    }
+    if manifest_model.input_modalities.len() > MAX_INPUT_MODALITIES_PER_MODEL {
+        return Err(format!(
+            "provider manifest model {} must contain no more than {MAX_INPUT_MODALITIES_PER_MODEL} input modalities",
+            manifest_model.id
+        ));
+    }
+    let mut seen_modalities = HashSet::new();
+    for modality in &manifest_model.input_modalities {
+        if !seen_modalities.insert(modality) {
+            return Err(format!(
+                "provider manifest model {} contains duplicate input modality",
+                manifest_model.id
+            ));
+        }
+    }
+    if !seen_modalities.contains(&InputModality::Text) {
+        return Err(format!(
+            "provider manifest model {} must support text input",
+            manifest_model.id
+        ));
+    }
+    Ok(())
+}
+
 /// Identifiers are interpolated into model-visible model and service-tier
 /// summaries. Restrict them to short ASCII tokens so a manifest cannot add
 /// quoting, Markdown, newlines, or natural-language instructions there.
@@ -426,9 +469,19 @@ fn reasoning_preset(model: &ModelInfo, effort: ReasoningEffort) -> ReasoningEffo
 }
 
 fn to_service_tier(service_tier: ProviderManifestServiceTier) -> Result<ModelServiceTier, String> {
+    // Service-tier names become slash-command identifiers in the TUI. Keep
+    // that command identity local: remote display prose is validated above but
+    // never allowed to create or shadow a built-in command. Canonical fast and
+    // flex IDs retain their existing UX; provider-specific tiers live under a
+    // collision-resistant tier- namespace.
+    let name = match service_tier.id.as_str() {
+        id if id == ServiceTier::Fast.request_value() => "fast".to_string(),
+        id if id == ServiceTier::Flex.request_value() => "flex".to_string(),
+        id => format!("tier-{id}"),
+    };
     Ok(ModelServiceTier {
         id: service_tier.id,
-        name: service_tier.name,
+        name,
         description: service_tier.description,
     })
 }
