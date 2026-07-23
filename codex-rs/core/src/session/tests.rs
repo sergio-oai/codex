@@ -62,6 +62,7 @@ use codex_protocol::models::PermissionProfile;
 use codex_protocol::models::SandboxEnforcement;
 use codex_protocol::openai_models::ModelServiceTier;
 use codex_protocol::openai_models::ModelsResponse;
+use codex_protocol::openai_models::ReasoningEffortPreset;
 use codex_protocol::permissions::FileSystemAccessMode;
 use codex_protocol::permissions::FileSystemPath;
 use codex_protocol::permissions::FileSystemSandboxEntry;
@@ -5146,6 +5147,133 @@ async fn provider_manifest_rejects_unadvertised_model_transitions() {
 }
 
 #[tokio::test]
+async fn provider_manifest_rejects_unsupported_reasoning_effort_transitions() {
+    let (mut session, _turn_context) = make_session_and_context().await;
+    let current_model = {
+        let state = session.state.lock().await;
+        state
+            .session_configuration
+            .collaboration_mode
+            .model()
+            .to_string()
+    };
+    let mut config = (*session.get_config().await).clone();
+    config.model_provider.provider_manifest_path = Some("codex/provider-manifest".to_string());
+
+    let mut current_model_info = construct_model_info_offline_for_tests(
+        current_model.as_str(),
+        &config.to_models_manager_config(),
+    );
+    current_model_info.default_reasoning_level = Some(ReasoningEffortConfig::Medium);
+    current_model_info.supported_reasoning_levels = vec![ReasoningEffortPreset {
+        effort: ReasoningEffortConfig::Medium,
+        description: "medium".to_string(),
+    }];
+    let mut next_model_info = construct_model_info_offline_for_tests(
+        "next-manifest-model",
+        &config.to_models_manager_config(),
+    );
+    next_model_info.default_reasoning_level = Some(ReasoningEffortConfig::Low);
+    next_model_info.supported_reasoning_levels = vec![ReasoningEffortPreset {
+        effort: ReasoningEffortConfig::Low,
+        description: "low".to_string(),
+    }];
+    session.services.models_manager = Arc::new(StaticModelsManager::new(
+        /*auth_manager*/ None,
+        ModelsResponse {
+            models: vec![current_model_info, next_model_info],
+        },
+    ));
+    {
+        let mut state = session.state.lock().await;
+        state.session_configuration.provider = config.model_provider.clone();
+        state.session_configuration.original_config_do_not_use = Arc::new(config);
+    }
+
+    let supported_updates = SessionSettingsUpdate {
+        collaboration_mode: Some(CollaborationMode {
+            mode: ModeKind::Default,
+            settings: Settings {
+                model: current_model.clone(),
+                reasoning_effort: Some(ReasoningEffortConfig::Medium),
+                developer_instructions: None,
+            },
+        }),
+        ..Default::default()
+    };
+    assert!(
+        session.preview_settings(&supported_updates).await.is_ok(),
+        "manifest-supported reasoning effort should preview successfully"
+    );
+    session
+        .update_settings(supported_updates)
+        .await
+        .expect("manifest-supported reasoning effort should update");
+
+    let unsupported_same_model_updates = SessionSettingsUpdate {
+        collaboration_mode: Some(CollaborationMode {
+            mode: ModeKind::Default,
+            settings: Settings {
+                model: current_model.clone(),
+                reasoning_effort: Some(ReasoningEffortConfig::High),
+                developer_instructions: None,
+            },
+        }),
+        ..Default::default()
+    };
+    let preview_error = session
+        .preview_settings(&unsupported_same_model_updates)
+        .await
+        .expect_err("preview should reject an unsupported manifest reasoning effort");
+    assert!(
+        preview_error.to_string().contains("reasoning_effort"),
+        "unexpected preview error: {preview_error}"
+    );
+    assert!(
+        session
+            .update_settings(unsupported_same_model_updates.clone())
+            .await
+            .is_err(),
+        "core thread settings should reject an unsupported manifest reasoning effort"
+    );
+    assert!(
+        session
+            .new_turn_with_sub_id(
+                "manifest-reasoning-transition".to_string(),
+                unsupported_same_model_updates,
+            )
+            .await
+            .is_err(),
+        "core turn creation should reject an unsupported manifest reasoning effort"
+    );
+
+    let unsupported_next_model_updates = SessionSettingsUpdate {
+        collaboration_mode: Some(CollaborationMode {
+            mode: ModeKind::Default,
+            settings: Settings {
+                model: "next-manifest-model".to_string(),
+                reasoning_effort: Some(ReasoningEffortConfig::Medium),
+                developer_instructions: None,
+            },
+        }),
+        ..Default::default()
+    };
+    let next_model_error = session
+        .preview_settings(&unsupported_next_model_updates)
+        .await
+        .expect_err("preview should reject effort unsupported by the next manifest model");
+    assert!(
+        next_model_error.to_string().contains("reasoning_effort"),
+        "unexpected next-model error: {next_model_error}"
+    );
+    assert_eq!(
+        session.thread_config_snapshot().await.reasoning_effort,
+        Some(ReasoningEffortConfig::Medium),
+        "rejected reasoning transitions must leave the active effort unchanged"
+    );
+}
+
+#[tokio::test]
 async fn ordinary_providers_keep_existing_model_override_behavior() {
     let (session, _turn_context) = make_session_and_context().await;
     let updates = SessionSettingsUpdate {
@@ -5163,6 +5291,28 @@ async fn ordinary_providers_keep_existing_model_override_behavior() {
     assert!(
         session.preview_settings(&updates).await.is_ok(),
         "ordinary providers should not gain manifest membership validation"
+    );
+
+    let current_model = session.thread_config_snapshot().await.model;
+    let custom_reasoning_updates = SessionSettingsUpdate {
+        collaboration_mode: Some(CollaborationMode {
+            mode: ModeKind::Default,
+            settings: Settings {
+                model: current_model,
+                reasoning_effort: Some(ReasoningEffortConfig::Custom(
+                    "provider-specific".to_string(),
+                )),
+                developer_instructions: None,
+            },
+        }),
+        ..Default::default()
+    };
+    assert!(
+        session
+            .preview_settings(&custom_reasoning_updates)
+            .await
+            .is_ok(),
+        "ordinary providers should not gain manifest reasoning validation"
     );
 }
 

@@ -7,6 +7,7 @@ use crate::start_memories_startup_task;
 use crate::storage::rebuild_raw_memories_file_from_memories;
 use crate::storage::sync_rollout_summaries_from_memories;
 use codex_config::types::MemoriesConfig;
+use codex_core::StartThreadOptions;
 use codex_features::Feature;
 use codex_git_utils::diff_since_latest_init;
 use codex_git_utils::reset_git_repository;
@@ -48,6 +49,10 @@ use std::sync::Arc;
 use tempfile::TempDir;
 use tokio::time::Duration;
 use tokio::time::Instant;
+use wiremock::Mock;
+use wiremock::ResponseTemplate;
+use wiremock::matchers::method;
+use wiremock::matchers::path;
 
 #[tokio::test]
 async fn memories_startup_creates_memory_root() -> anyhow::Result<()> {
@@ -508,6 +513,82 @@ async fn manifest_memory_defaults_reuse_the_active_thread_model() -> anyhow::Res
     );
 
     shutdown_test_codex(&test).await?;
+    Ok(())
+}
+
+#[tokio::test]
+async fn manifest_memory_request_context_uses_thread_scoped_catalog() -> anyhow::Result<()> {
+    let server = start_mock_server().await;
+    let home = Arc::new(TempDir::new()?);
+    let test = build_test_codex(&server, home).await?;
+    Mock::given(method("GET"))
+        .and(path("/v1/codex/provider-manifest"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+            "schema_version": 1,
+            "models": [{
+                "id": "venado-memory",
+                "display_name": "Venado memory",
+                "context_window": 12_345,
+                "max_input_tokens": 12_000,
+                "default_reasoning_effort": "medium",
+                "supported_reasoning_efforts": ["medium"],
+                "service_tiers": []
+            }]
+        })))
+        .expect(1)
+        .mount(&server)
+        .await;
+
+    let mut manifest_config = test.config.clone();
+    manifest_config.model = Some("venado-memory".to_string());
+    manifest_config.model_provider.provider_manifest_path =
+        Some("codex/provider-manifest".to_string());
+    let manifest_thread = test
+        .thread_manager
+        .start_thread(StartThreadOptions::new(manifest_config.clone()))
+        .await?;
+    let manifest_source = manifest_thread
+        .thread
+        .config_snapshot()
+        .await
+        .session_source;
+    let context = MemoryStartupContext::new(
+        Arc::clone(&test.thread_manager),
+        test.thread_manager.auth_manager(),
+        manifest_thread.session_configured.thread_id,
+        Arc::clone(&manifest_thread.thread),
+        &manifest_config,
+        manifest_source,
+    );
+
+    let request_context = context
+        .stage_one_request_context(&manifest_config, "venado-memory", ReasoningEffort::Low)
+        .await;
+
+    assert_eq!(
+        request_context.model_info.context_window,
+        Some(12_000),
+        "memory metadata must come from the manifest-backed thread catalog"
+    );
+    assert_eq!(
+        request_context.model_info.max_context_window,
+        Some(12_000),
+        "memory metadata must retain the manifest input cap"
+    );
+    assert_eq!(
+        request_context.model_info.supported_reasoning_levels.len(),
+        1,
+        "memory metadata must retain manifest capabilities"
+    );
+    assert_eq!(
+        request_context.reasoning_effort,
+        Some(ReasoningEffort::Medium),
+        "memory requests must use an effort advertised by the manifest model"
+    );
+
+    manifest_thread.thread.shutdown_and_wait().await?;
+    shutdown_test_codex(&test).await?;
+    server.verify().await;
     Ok(())
 }
 

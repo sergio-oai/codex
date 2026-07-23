@@ -21,6 +21,7 @@ use codex_protocol::models::ActivePermissionProfile;
 use codex_protocol::models::ContentItem;
 use codex_protocol::models::PermissionProfile;
 use codex_protocol::models::ResponseItem;
+use codex_protocol::openai_models::ModelInfo;
 use codex_protocol::openai_models::ReasoningEffort;
 use codex_protocol::protocol::AdditionalContextEntry;
 use codex_protocol::protocol::AskForApproval;
@@ -604,6 +605,21 @@ impl CodexThread {
 
     pub async fn config(&self) -> Arc<crate::config::Config> {
         self.session.get_config().await
+    }
+
+    /// Resolves model metadata through this thread's provider-scoped catalog.
+    ///
+    /// Callers outside `codex-core` should not reconstruct a model manager
+    /// from process-level state: app-server threads can override providers
+    /// independently, including authoritative provider manifests. Keep the
+    /// manager private and expose only the metadata query needed by detached
+    /// thread-adjacent work such as memories.
+    pub async fn model_info(&self, model: &str, config: &crate::config::Config) -> ModelInfo {
+        self.session
+            .services
+            .models_manager
+            .get_model_info(model, &config.to_models_manager_config())
+            .await
     }
 
     /// Resolves the MCP runtime configuration using this thread's extension data.

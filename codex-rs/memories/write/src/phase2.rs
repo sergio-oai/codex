@@ -89,10 +89,18 @@ pub async fn run(
             context.provider().memory_consolidation_preferred_model(),
         )
         .await;
+    let consolidation_reasoning_effort = context
+        .preferred_memory_reasoning_effort(
+            config.as_ref(),
+            &consolidation_model,
+            crate::stage_two::REASONING_EFFORT,
+        )
+        .await;
     let Some(agent_config) = agent::get_config(
         config.as_ref(),
         parent_permission_profile,
         &consolidation_model,
+        consolidation_reasoning_effort,
     ) else {
         // If we can't get the config, we can't consolidate.
         tracing::error!("failed to get agent config");
@@ -318,6 +326,7 @@ mod agent {
         config: &Config,
         parent_permission_profile: PermissionProfile,
         consolidation_model: &str,
+        reasoning_effort: Option<codex_protocol::openai_models::ReasoningEffort>,
     ) -> Option<Config> {
         let root = memory_root(&config.codex_home);
         let mut agent_config = config.clone();
@@ -361,7 +370,7 @@ mod agent {
         .ok()?;
 
         agent_config.model = Some(consolidation_model.to_string());
-        agent_config.model_reasoning_effort = Some(crate::stage_two::REASONING_EFFORT);
+        agent_config.model_reasoning_effort = reasoning_effort;
 
         Some(agent_config)
     }

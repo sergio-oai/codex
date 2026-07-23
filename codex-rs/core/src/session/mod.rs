@@ -659,6 +659,28 @@ impl Session {
         let model_info = models_manager
             .get_model_info(model.as_str(), &config.to_models_manager_config())
             .await;
+        if let Some(path) = config.model_provider.provider_manifest_path.as_deref()
+            && let Some(reasoning_effort) = config.model_reasoning_effort.as_ref()
+            && !model_info
+                .supported_reasoning_levels
+                .iter()
+                .any(|preset| preset.effort == *reasoning_effort)
+        {
+            let supported_reasoning_efforts = model_info
+                .supported_reasoning_levels
+                .iter()
+                .map(|preset| preset.effort.to_string())
+                .collect::<Vec<_>>()
+                .join(", ");
+            let supported_reasoning_efforts = if supported_reasoning_efforts.is_empty() {
+                "none".to_string()
+            } else {
+                supported_reasoning_efforts
+            };
+            return Err(CodexErr::Fatal(format!(
+                "provider manifest {path} model {model} does not advertise configured reasoning effort {reasoning_effort}; supported reasoning efforts: {supported_reasoning_efforts}"
+            )));
+        }
         let multi_agent_version = config.multi_agent_version_override().or_else(|| {
             resolve_multi_agent_version(&conversation_history, inherited_multi_agent_version)
         });
@@ -1506,10 +1528,11 @@ impl Session {
     /// Authoritative provider manifests are exact catalogs, not metadata hints.
     ///
     /// Keep the current model running if a later catalog refresh removes it,
-    /// but reject an explicit transition to a model the already-loaded
-    /// manifest does not advertise. Ordinary providers return before touching
-    /// the model manager, preserving their existing override behavior.
-    pub(crate) async fn validate_provider_manifest_model_transition(
+    /// but reject an explicit model or reasoning-effort transition that the
+    /// already-loaded manifest does not advertise. Ordinary providers return
+    /// before touching the model manager, preserving their existing override
+    /// behavior.
+    pub(crate) async fn validate_provider_manifest_collaboration_mode_transition(
         &self,
         updates: &SessionSettingsUpdate,
     ) -> ConstraintResult<()> {
@@ -1517,7 +1540,8 @@ impl Session {
             return Ok(());
         };
         let requested_model = collaboration_mode.model().to_string();
-        let (current_model, config) = {
+        let requested_reasoning_effort = collaboration_mode.reasoning_effort();
+        let (current_model, current_reasoning_effort, config) = {
             let state = self.state.lock().await;
             (
                 state
@@ -1525,10 +1549,16 @@ impl Session {
                     .collaboration_mode
                     .model()
                     .to_string(),
+                state
+                    .session_configuration
+                    .collaboration_mode
+                    .reasoning_effort(),
                 Arc::clone(&state.session_configuration.original_config_do_not_use),
             )
         };
-        if requested_model == current_model {
+        if requested_model == current_model
+            && requested_reasoning_effort == current_reasoning_effort
+        {
             return Ok(());
         }
         let Some(provider_manifest_path) = config.model_provider.provider_manifest_path.as_deref()
@@ -1552,25 +1582,51 @@ impl Session {
                 ),
                 requirement_source: codex_config::RequirementSource::Unknown,
             })?;
-        if available_models
+        let Some(available_model) = available_models
             .iter()
-            .any(|available_model| available_model.model == requested_model)
+            .find(|available_model| available_model.model == requested_model)
+        else {
+            return Err(ConstraintError::InvalidValue {
+                field_name: "model",
+                candidate: requested_model,
+                allowed: format!("advertised by provider manifest {provider_manifest_path}"),
+                requirement_source: codex_config::RequirementSource::Unknown,
+            });
+        };
+        if let Some(reasoning_effort) = requested_reasoning_effort.as_ref()
+            && !available_model
+                .supported_reasoning_efforts
+                .iter()
+                .any(|preset| preset.effort == *reasoning_effort)
         {
-            return Ok(());
+            let supported_reasoning_efforts = available_model
+                .supported_reasoning_efforts
+                .iter()
+                .map(|preset| preset.effort.to_string())
+                .collect::<Vec<_>>()
+                .join(", ");
+            let supported_reasoning_efforts = if supported_reasoning_efforts.is_empty() {
+                "none".to_string()
+            } else {
+                supported_reasoning_efforts
+            };
+            return Err(ConstraintError::InvalidValue {
+                field_name: "reasoning_effort",
+                candidate: reasoning_effort.to_string(),
+                allowed: format!(
+                    "advertised for model {requested_model} by provider manifest {provider_manifest_path} (supported reasoning efforts: {supported_reasoning_efforts})"
+                ),
+                requirement_source: codex_config::RequirementSource::Unknown,
+            });
         }
-        Err(ConstraintError::InvalidValue {
-            field_name: "model",
-            candidate: requested_model,
-            allowed: format!("advertised by provider manifest {provider_manifest_path}"),
-            requirement_source: codex_config::RequirementSource::Unknown,
-        })
+        Ok(())
     }
 
     pub(crate) async fn update_settings(
         &self,
         updates: SessionSettingsUpdate,
     ) -> ConstraintResult<()> {
-        self.validate_provider_manifest_model_transition(&updates)
+        self.validate_provider_manifest_collaboration_mode_transition(&updates)
             .await?;
         let notify_config_contributors = !self.services.extensions.config_contributors().is_empty();
         let (previous_config, new_config, permission_profile_changed) = {
@@ -1612,7 +1668,7 @@ impl Session {
         &self,
         updates: &SessionSettingsUpdate,
     ) -> ConstraintResult<ThreadConfigSnapshot> {
-        self.validate_provider_manifest_model_transition(updates)
+        self.validate_provider_manifest_collaboration_mode_transition(updates)
             .await?;
         let state = self.state.lock().await;
         state

@@ -107,6 +107,38 @@ fn build_session_telemetry(
     .with_auth_env(auth_env_telemetry.to_otel_metadata())
 }
 
+/// Memory workers historically use fixed low/medium effort defaults. Keep
+/// those defaults for ordinary providers, but do not send an effort that an
+/// authoritative provider manifest explicitly omits.
+fn resolve_memory_reasoning_effort(
+    config: &Config,
+    model_info: &ModelInfo,
+    preferred_reasoning_effort: ReasoningEffort,
+) -> Option<ReasoningEffort> {
+    if config.model_provider.provider_manifest_path.is_none() {
+        return Some(preferred_reasoning_effort);
+    }
+
+    let supports_effort = |effort: &ReasoningEffort| {
+        model_info
+            .supported_reasoning_levels
+            .iter()
+            .any(|preset| preset.effort == *effort)
+    };
+    if supports_effort(&preferred_reasoning_effort) {
+        return Some(preferred_reasoning_effort);
+    }
+    if let Some(default_reasoning_effort) = model_info.default_reasoning_level.clone()
+        && supports_effort(&default_reasoning_effort)
+    {
+        return Some(default_reasoning_effort);
+    }
+    model_info
+        .supported_reasoning_levels
+        .first()
+        .map(|preset| preset.effort.clone())
+}
+
 impl MemoryStartupContext {
     pub(crate) fn new(
         thread_manager: Arc<ThreadManager>,
@@ -231,14 +263,12 @@ impl MemoryStartupContext {
         &self,
         config: &Config,
         model_name: &str,
-        reasoning_effort: ReasoningEffort,
+        preferred_reasoning_effort: ReasoningEffort,
     ) -> StageOneRequestContext {
         let config_snapshot = self.thread.config_snapshot().await;
-        let model_info = self
-            .thread_manager
-            .get_models_manager()
-            .get_model_info(model_name, &config.to_models_manager_config())
-            .await;
+        let model_info = self.thread.model_info(model_name, config).await;
+        let reasoning_effort =
+            resolve_memory_reasoning_effort(config, &model_info, preferred_reasoning_effort);
         let reasoning_summary = config
             .model_reasoning_summary
             .unwrap_or(model_info.default_reasoning_summary);
@@ -253,10 +283,20 @@ impl MemoryStartupContext {
                 model_name,
                 config_snapshot.originator,
             ),
-            reasoning_effort: Some(reasoning_effort),
+            reasoning_effort,
             reasoning_summary,
             service_tier: config_snapshot.service_tier,
         }
+    }
+
+    pub(crate) async fn preferred_memory_reasoning_effort(
+        &self,
+        config: &Config,
+        model_name: &str,
+        preferred_reasoning_effort: ReasoningEffort,
+    ) -> Option<ReasoningEffort> {
+        let model_info = self.thread.model_info(model_name, config).await;
+        resolve_memory_reasoning_effort(config, &model_info, preferred_reasoning_effort)
     }
 
     pub(crate) async fn stream_stage_one_prompt(

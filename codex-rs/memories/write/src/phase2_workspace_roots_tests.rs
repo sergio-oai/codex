@@ -20,6 +20,7 @@ async fn consolidation_rebinds_workspace_roots_to_memory_root() -> anyhow::Resul
         &test.config,
         parent_permission_profile,
         "consolidation-model",
+        Some(crate::stage_two::REASONING_EFFORT),
     )
     .expect("agent config should be created");
     let root = memory_root(&test.config.codex_home);

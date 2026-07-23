@@ -50,6 +50,7 @@ async fn consolidation_uses_canonical_parent_enforcement() -> anyhow::Result<()>
             &test.config,
             parent_permission_profile,
             "consolidation-model",
+            Some(crate::stage_two::REASONING_EFFORT),
         )
         .expect("agent config should be created");
 

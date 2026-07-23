@@ -4,6 +4,7 @@ use anyhow::Result;
 use codex_core::config::AgentRoleConfig;
 use codex_features::Feature;
 use codex_protocol::config_types::ServiceTier;
+use codex_protocol::openai_models::ReasoningEffort;
 use core_test_support::responses::ev_assistant_message;
 use core_test_support::responses::ev_completed;
 use core_test_support::responses::ev_function_call_with_namespace;
@@ -241,6 +242,66 @@ async fn provider_manifest_rejects_unadvertised_configured_model_impl() -> Resul
     assert!(
         error.to_string().contains(
             "provider manifest codex/provider-manifest does not advertise configured model not-advertised"
+        ),
+        "unexpected startup error: {error:#}"
+    );
+
+    server.verify().await;
+    Ok(())
+}
+
+#[test]
+fn provider_manifest_rejects_unsupported_configured_reasoning_effort() -> Result<()> {
+    run_provider_manifest_test(
+        "provider_manifest_rejects_unsupported_configured_reasoning_effort",
+        || {
+            let runtime = tokio::runtime::Builder::new_current_thread()
+                .enable_all()
+                .build()?;
+            runtime
+                .block_on(provider_manifest_rejects_unsupported_configured_reasoning_effort_impl())
+        },
+    )
+}
+
+async fn provider_manifest_rejects_unsupported_configured_reasoning_effort_impl() -> Result<()> {
+    skip_if_no_network!(Ok(()));
+
+    let server = MockServer::start().await;
+    Mock::given(method("GET"))
+        .and(path("/v1/codex/provider-manifest"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "schema_version": 1,
+            "models": [{
+                "id": "venado-only",
+                "display_name": "Venado only",
+                "max_input_tokens": 24_000,
+                "default_reasoning_effort": "medium",
+                "supported_reasoning_efforts": ["medium"],
+                "service_tiers": []
+            }]
+        })))
+        .expect(1)
+        .mount(&server)
+        .await;
+
+    let mut builder = test_codex().with_config(|config| {
+        config.model = Some("venado-only".to_string());
+        config.model_reasoning_effort = Some(ReasoningEffort::High);
+        config.model_provider.provider_manifest_path = Some("codex/provider-manifest".to_string());
+    });
+    let error = match builder.build(&server).await {
+        Ok(_) => {
+            return Err(anyhow::anyhow!(
+                "session startup unexpectedly accepted an unsupported manifest reasoning effort"
+            ));
+        }
+        Err(error) => error,
+    };
+
+    assert!(
+        error.to_string().contains(
+            "provider manifest codex/provider-manifest model venado-only does not advertise configured reasoning effort high"
         ),
         "unexpected startup error: {error:#}"
     );
