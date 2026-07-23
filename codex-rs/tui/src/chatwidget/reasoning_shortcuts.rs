@@ -95,7 +95,7 @@ impl ChatWidget {
             return true;
         };
 
-        let choices = reasoning_choices(&preset);
+        let choices = reasoning_choices(&preset, self.uses_manifest_catalog_selection_semantics());
         if choices.is_empty() {
             self.add_info_message(
                 format!("Reasoning shortcuts are unavailable for {current_model}."),
@@ -178,7 +178,10 @@ impl ChatWidget {
     }
 }
 
-fn reasoning_choices(preset: &ModelPreset) -> Vec<ReasoningEffortConfig> {
+fn reasoning_choices(
+    preset: &ModelPreset,
+    uses_manifest_catalog_selection_semantics: bool,
+) -> Vec<ReasoningEffortConfig> {
     let (mut choices, mut advanced_choices): (Vec<_>, Vec<_>) = preset
         .supported_reasoning_efforts
         .iter()
@@ -186,7 +189,10 @@ fn reasoning_choices(preset: &ModelPreset) -> Vec<ReasoningEffortConfig> {
         .partition(|effort| !ChatWidget::is_advanced_reasoning_effort(effort));
     advanced_choices.sort_by_key(|effort| matches!(effort, ReasoningEffortConfig::Ultra));
     choices.extend(advanced_choices);
-    if choices.is_empty() && preset.default_reasoning_effort != ReasoningEffortConfig::None {
+    if choices.is_empty()
+        && (!uses_manifest_catalog_selection_semantics
+            || preset.default_reasoning_effort != ReasoningEffortConfig::None)
+    {
         choices.push(preset.default_reasoning_effort.clone());
     }
     choices

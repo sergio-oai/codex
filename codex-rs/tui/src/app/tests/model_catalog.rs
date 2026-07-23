@@ -199,6 +199,24 @@ async fn bootstrap_catalog_provenance_prefers_server_hint() {
     );
 }
 
+#[tokio::test]
+async fn chatwidget_init_carries_manifest_catalog_provenance() {
+    let mut app = make_test_app().await;
+    app.model_catalog_provenance = ModelCatalogProvenance::KnownManifest;
+    let mut tui = crate::tui::test_support::make_test_tui().expect("test tui");
+
+    let init = app.chatwidget_init_for_forked_or_resumed_thread(
+        &mut tui,
+        app.config.clone(),
+        /*initial_user_message*/ None,
+    );
+
+    assert_eq!(
+        init.model_catalog_provenance,
+        ModelCatalogProvenance::KnownManifest
+    );
+}
+
 fn model_migration_copy_to_plain_text(copy: &crate::model_migration::ModelMigrationCopy) -> String {
     if let Some(markdown) = copy.markdown.as_ref() {
         return markdown.clone();

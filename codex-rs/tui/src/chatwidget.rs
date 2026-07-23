@@ -60,6 +60,7 @@ use crate::legacy_core::config::PermissionProfileSnapshot;
 use crate::mention_codec::LinkedMention;
 use crate::mention_codec::encode_history_mentions;
 use crate::model_catalog::ModelCatalog;
+use crate::model_catalog::ModelCatalogProvenance;
 use crate::multi_agents;
 use crate::multi_agents::AgentMetadata;
 use crate::session_state::SessionNetworkProxyRuntime;
@@ -496,6 +497,11 @@ pub(crate) struct ChatWidgetInit {
     pub(crate) has_chatgpt_account: bool,
     pub(crate) has_codex_backend_auth: bool,
     pub(crate) model_catalog: Arc<ModelCatalog>,
+    /// Provider kind that produced the model catalog.
+    ///
+    /// This is distinct from config.model_provider: remote app-server
+    /// threads may use a different provider than the process-level config.
+    pub(crate) model_catalog_provenance: ModelCatalogProvenance,
     pub(crate) feedback: codex_feedback::CodexFeedback,
     pub(crate) is_first_run: bool,
     pub(crate) status_account_display: Option<StatusAccountDisplay>,
@@ -548,6 +554,7 @@ pub(crate) struct ChatWidget {
     has_chatgpt_account: bool,
     has_codex_backend_auth: bool,
     model_catalog: Arc<ModelCatalog>,
+    model_catalog_provenance: ModelCatalogProvenance,
     session_telemetry: SessionTelemetry,
     session_header: SessionHeader,
     initial_user_message: Option<UserMessage>,

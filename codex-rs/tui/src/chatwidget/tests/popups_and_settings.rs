@@ -44,6 +44,7 @@ async fn experimental_mode_plan_is_ignored_on_startup() {
         has_chatgpt_account: false,
         has_codex_backend_auth: false,
         model_catalog: test_model_catalog(&cfg),
+        model_catalog_provenance: ModelCatalogProvenance::KnownOrdinary,
         feedback: codex_feedback::CodexFeedback::new(),
         is_first_run: true,
         status_account_display: None,
@@ -3270,9 +3271,48 @@ async fn model_reasoning_selection_popup_applies_custom_effort() {
 }
 
 #[tokio::test]
+async fn ordinary_model_without_reasoning_efforts_keeps_legacy_none_override() {
+    let (mut chat, mut rx, _op_rx) = make_chatwidget_manual(Some("gpt-5.4")).await;
+    let mut preset = get_available_model(&chat, "gpt-5.4");
+    preset.id = "ordinary-no-reasoning".to_string();
+    preset.model = "ordinary-no-reasoning".to_string();
+    preset.default_reasoning_effort = ReasoningEffortConfig::None;
+    preset.supported_reasoning_efforts.clear();
+    while rx.try_recv().is_ok() {}
+
+    chat.open_all_models_popup(vec![preset]);
+    chat.handle_key_event(KeyEvent::from(KeyCode::Enter));
+    let popup_preset = std::iter::from_fn(|| rx.try_recv().ok()).find_map(|event| match event {
+        AppEvent::OpenReasoningPopup { model } => Some(model),
+        _ => None,
+    });
+    chat.open_reasoning_popup(popup_preset.expect("ordinary model keeps reasoning popup"));
+
+    let mut selected_effort = None;
+    let mut persisted_selection = None;
+    while let Ok(event) = rx.try_recv() {
+        match event {
+            AppEvent::UpdateReasoningEffort(effort) => selected_effort = Some(effort),
+            AppEvent::PersistModelSelection { model, effort } => {
+                persisted_selection = Some((model, effort));
+            }
+            _ => {}
+        }
+    }
+    assert_eq!(selected_effort, Some(Some(ReasoningEffortConfig::None)));
+    assert_eq!(
+        persisted_selection,
+        Some((
+            "ordinary-no-reasoning".to_string(),
+            Some(ReasoningEffortConfig::None)
+        ))
+    );
+}
+
+#[tokio::test]
 async fn manifest_model_without_reasoning_efforts_selects_without_override() {
     let (mut chat, mut rx, _op_rx) = make_chatwidget_manual(Some("gpt-5.4")).await;
-    chat.config.model_provider.provider_manifest_path = Some("codex/provider-manifest".to_string());
+    chat.model_catalog_provenance = ModelCatalogProvenance::KnownManifest;
     let mut preset = get_available_model(&chat, "gpt-5.4");
     preset.id = "manifest-no-reasoning".to_string();
     preset.model = "manifest-no-reasoning".to_string();
@@ -3307,7 +3347,7 @@ async fn manifest_model_without_reasoning_efforts_selects_without_override() {
 #[tokio::test]
 async fn manifest_auto_model_without_reasoning_efforts_selects_without_override() {
     let (mut chat, mut rx, _op_rx) = make_chatwidget_manual(Some("gpt-5.4")).await;
-    chat.config.model_provider.provider_manifest_path = Some("codex/provider-manifest".to_string());
+    chat.model_catalog_provenance = ModelCatalogProvenance::KnownManifest;
     let mut preset = get_available_model(&chat, "gpt-5.4");
     preset.id = "codex-auto-manifest".to_string();
     preset.model = "codex-auto-manifest".to_string();
@@ -3517,6 +3557,7 @@ async fn reasoning_down_shortcuts_lower_reasoning_effort() {
 #[tokio::test]
 async fn reasoning_shortcut_does_not_invent_none_for_no_reasoning_model() {
     let (mut chat, mut rx, _op_rx) = make_chatwidget_manual(Some("gpt-5.4")).await;
+    chat.model_catalog_provenance = ModelCatalogProvenance::KnownManifest;
     chat.thread_id = Some(ThreadId::new());
     let mut preset = get_available_model(&chat, "gpt-5.4");
     preset.id = "manifest-no-reasoning".to_string();

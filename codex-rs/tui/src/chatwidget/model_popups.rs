@@ -114,8 +114,7 @@ impl ChatWidget {
                         });
                     })]
                 } else {
-                    let default_effort =
-                        Self::default_reasoning_effort_for_model_selection(&preset);
+                    let default_effort = self.default_reasoning_effort_for_model_selection(&preset);
                     let should_prompt_plan_mode_scope = self
                         .should_prompt_plan_mode_reasoning_scope(
                             model.as_str(),
@@ -204,7 +203,9 @@ impl ChatWidget {
             let is_current = preset.model.as_str() == self.current_model();
             let single_supported_effort = preset.supported_reasoning_efforts.len() == 1;
             let selects_without_reasoning_popup = preset.supported_reasoning_efforts.is_empty()
-                && Self::default_reasoning_effort_for_model_selection(&preset).is_none();
+                && self
+                    .default_reasoning_effort_for_model_selection(&preset)
+                    .is_none();
             let actions: Vec<SelectionAction> = if selects_without_reasoning_popup {
                 let should_prompt_plan_mode_scope =
                     self.should_prompt_plan_mode_reasoning_scope(preset.model.as_str(), None);
@@ -284,28 +285,22 @@ impl ChatWidget {
     }
 
     /// `ModelPreset` uses `ReasoningEffort::None` as a legacy placeholder
-    /// when a model has no default. Only treat it as an explicit override when
-    /// the catalog advertises it; otherwise choose an advertised effort or omit
-    /// the override entirely. Valid ordinary catalogs keep their existing
-    /// selection behavior.
+    /// when a model has no default. Manifest catalogs are authoritative, so
+    /// only treat a default as an explicit override when that catalog
+    /// advertises it. Ordinary catalogs keep their historical synthetic
+    /// default path.
     fn default_reasoning_effort_for_model_selection(
+        &self,
         preset: &ModelPreset,
     ) -> Option<ReasoningEffortConfig> {
-        if preset.supported_reasoning_efforts.is_empty() {
-            return (preset.default_reasoning_effort != ReasoningEffortConfig::None)
-                .then(|| preset.default_reasoning_effort.clone());
-        }
-        if preset
-            .supported_reasoning_efforts
-            .iter()
-            .any(|option| option.effort == preset.default_reasoning_effort)
-        {
+        if !self.uses_manifest_catalog_selection_semantics() {
             return Some(preset.default_reasoning_effort.clone());
         }
         preset
             .supported_reasoning_efforts
-            .first()
-            .map(|option| option.effort.clone())
+            .iter()
+            .any(|option| option.effort == preset.default_reasoning_effort)
+            .then(|| preset.default_reasoning_effort.clone())
     }
 
     fn should_prompt_plan_mode_reasoning_scope(
@@ -440,7 +435,10 @@ impl ChatWidget {
     pub(crate) fn open_reasoning_popup(&mut self, preset: ModelPreset) {
         let default_effort = preset.default_reasoning_effort.clone();
         let supported = &preset.supported_reasoning_efforts;
-        if supported.is_empty() && default_effort == ReasoningEffortConfig::None {
+        if self.uses_manifest_catalog_selection_semantics()
+            && supported.is_empty()
+            && default_effort == ReasoningEffortConfig::None
+        {
             let selected_model = preset.model;
             if self.should_prompt_plan_mode_reasoning_scope(&selected_model, None) {
                 self.app_event_tx

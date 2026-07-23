@@ -191,6 +191,7 @@ pub(super) async fn make_chatwidget_manual_with_auth(
         has_chatgpt_account,
         has_codex_backend_auth,
         model_catalog,
+        model_catalog_provenance: ModelCatalogProvenance::KnownOrdinary,
         feedback: codex_feedback::CodexFeedback::new(),
         is_first_run: true,
         status_account_display: None,

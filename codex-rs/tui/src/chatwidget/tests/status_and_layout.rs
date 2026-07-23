@@ -432,6 +432,7 @@ async fn configured_pet_load_is_deferred_until_after_construction() {
         has_chatgpt_account: false,
         has_codex_backend_auth: false,
         model_catalog: test_model_catalog(&cfg),
+        model_catalog_provenance: ModelCatalogProvenance::KnownOrdinary,
         feedback: codex_feedback::CodexFeedback::new(),
         is_first_run: true,
         status_account_display: None,

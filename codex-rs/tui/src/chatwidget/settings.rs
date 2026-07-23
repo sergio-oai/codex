@@ -195,6 +195,21 @@ impl ChatWidget {
         self.model_catalog.clone()
     }
 
+    /// Whether picker behavior may rely on manifest-owned reasoning metadata.
+    ///
+    /// Unknown provenance only takes the manifest path when the user
+    /// explicitly opted into one locally. That keeps older remote servers
+    /// compatible without changing ordinary providers.
+    pub(super) fn uses_manifest_catalog_selection_semantics(&self) -> bool {
+        match self.model_catalog_provenance {
+            ModelCatalogProvenance::KnownManifest => true,
+            ModelCatalogProvenance::KnownOrdinary => false,
+            ModelCatalogProvenance::Unknown => {
+                self.config.model_provider.provider_manifest_path.is_some()
+            }
+        }
+    }
+
     pub(crate) fn current_plan_type(&self) -> Option<PlanType> {
         self.plan_type
     }

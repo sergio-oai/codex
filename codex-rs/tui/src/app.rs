@@ -58,6 +58,7 @@ use crate::legacy_core::config::PermissionProfileSnapshot;
 use crate::legacy_core::config::edit::ConfigEditsBuilder;
 use crate::managed_new_thread_defaults::apply_managed_new_thread_defaults;
 use crate::model_catalog::ModelCatalog;
+use crate::model_catalog::ModelCatalogProvenance;
 use crate::model_migration::ModelMigrationOutcome;
 use crate::model_migration::migration_copy_for_models;
 use crate::model_migration::run_model_migration_prompt;
@@ -511,20 +512,6 @@ fn configured_provider_uses_manifest(config: &Config, provider_id: &str) -> Opti
         .map(|provider| provider.provider_manifest_path.is_some())
 }
 
-/// Snapshot of the provider kind that produced the currently displayed
-/// catalog.
-///
-/// Keep this separate from the mutable runtime config: users can edit a
-/// provider definition while the TUI is open, and a same-ID transition from a
-/// manifest provider to an ordinary provider (or vice versa) still needs a
-/// fresh catalog.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum ModelCatalogProvenance {
-    KnownOrdinary,
-    KnownManifest,
-    Unknown,
-}
-
 fn model_catalog_provenance_for_provider(
     config: &Config,
     provider_id: Option<&str>,
@@ -855,6 +842,7 @@ impl App {
             has_chatgpt_account: self.chat_widget.has_chatgpt_account(),
             has_codex_backend_auth: self.chat_widget.has_codex_backend_auth(),
             model_catalog: self.model_catalog.clone(),
+            model_catalog_provenance: self.model_catalog_provenance,
             feedback: self.feedback.clone(),
             is_first_run: false,
             status_account_display: self.chat_widget.status_account_display().cloned(),
@@ -1031,6 +1019,7 @@ impl App {
                     has_chatgpt_account,
                     has_codex_backend_auth,
                     model_catalog: model_catalog.clone(),
+                    model_catalog_provenance,
                     feedback: feedback.clone(),
                     is_first_run,
                     status_account_display: status_account_display.clone(),
@@ -1089,6 +1078,7 @@ impl App {
                     has_chatgpt_account,
                     has_codex_backend_auth,
                     model_catalog: model_catalog.clone(),
+                    model_catalog_provenance,
                     feedback: feedback.clone(),
                     is_first_run,
                     status_account_display: status_account_display.clone(),
@@ -1146,6 +1136,7 @@ impl App {
                     has_chatgpt_account,
                     has_codex_backend_auth,
                     model_catalog: model_catalog.clone(),
+                    model_catalog_provenance,
                     feedback: feedback.clone(),
                     is_first_run,
                     status_account_display: status_account_display.clone(),
