@@ -16,7 +16,6 @@ pub async fn supported_models(
     thread_manager: Arc<ThreadManager>,
     thread_id: Option<ThreadId>,
     include_hidden: bool,
-    catalog_has_authoritative_provider_manifest: bool,
     http_client_factory: HttpClientFactory,
 ) -> CodexResult<Vec<Model>> {
     let presets = match thread_id {
@@ -37,23 +36,18 @@ pub async fn supported_models(
     Ok(presets
         .into_iter()
         .filter(|preset| include_hidden || preset.show_in_picker)
-        .map(|preset| model_from_preset(preset, catalog_has_authoritative_provider_manifest))
+        .map(model_from_preset)
         .collect())
 }
 
-fn model_from_preset(
-    preset: ModelPreset,
-    catalog_has_authoritative_provider_manifest: bool,
-) -> Model {
+fn model_from_preset(preset: ModelPreset) -> Model {
     // ModelPreset keeps ReasoningEffort::None as a legacy placeholder when
-    // ModelInfo has no default. Only authoritative manifests need to preserve
-    // that distinction on the app-server wire; ordinary catalogs retain their
-    // existing defaultReasoningEffort value.
-    let default_reasoning_effort = if catalog_has_authoritative_provider_manifest {
-        preset.advertised_default_reasoning_effort.clone()
-    } else {
-        Some(preset.default_reasoning_effort.clone())
-    };
+    // ModelInfo has no default. Keep the existing non-null default field for
+    // wire compatibility, and expose the exact source-owned value through the
+    // additive advertised field. Manifest-aware clients use that exact value;
+    // ordinary clients keep their legacy field. Carry it for every catalog
+    // because a thread can retain manifest lineage after switching back to an
+    // ordinary provider.
 
     Model {
         id: preset.id.to_string(),
@@ -72,7 +66,8 @@ fn model_from_preset(
         supported_reasoning_efforts: reasoning_efforts_from_preset(
             preset.supported_reasoning_efforts,
         ),
-        default_reasoning_effort,
+        default_reasoning_effort: preset.default_reasoning_effort,
+        advertised_default_reasoning_effort: preset.advertised_default_reasoning_effort,
         input_modalities: preset.input_modalities,
         supports_personality: preset.supports_personality,
         additional_speed_tiers: preset.additional_speed_tiers,

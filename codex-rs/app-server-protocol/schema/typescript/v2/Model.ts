@@ -8,7 +8,17 @@ import type { ModelServiceTier } from "./ModelServiceTier";
 import type { ModelUpgradeInfo } from "./ModelUpgradeInfo";
 import type { ReasoningEffortOption } from "./ReasoningEffortOption";
 
-export type Model = { id: string, model: string, upgrade: string | null, upgradeInfo: ModelUpgradeInfo | null, availabilityNux: ModelAvailabilityNux | null, displayName: string, description: string, hidden: boolean, supportedReasoningEfforts: Array<ReasoningEffortOption>, defaultReasoningEffort: ReasoningEffort | null, inputModalities: Array<InputModality>, supportsPersonality: boolean,
+export type Model = { id: string, model: string, upgrade: string | null, upgradeInfo: ModelUpgradeInfo | null, availabilityNux: ModelAvailabilityNux | null, displayName: string, description: string, hidden: boolean, supportedReasoningEfforts: Array<ReasoningEffortOption>,
+/**
+ * Legacy effective default retained for existing clients.
+ */
+defaultReasoningEffort: ReasoningEffort,
+/**
+ * Exact default advertised by the source model metadata.
+ *
+ * An authoritative manifest may intentionally omit a default even when it advertises supported efforts. Clients using manifest catalog semantics should prefer this field and omit an override when it is null.
+ */
+advertisedDefaultReasoningEffort: ReasoningEffort | null, inputModalities: Array<InputModality>, supportsPersonality: boolean,
 /**
  * Deprecated: use `serviceTiers` instead.
  */

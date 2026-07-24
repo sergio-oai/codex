@@ -533,11 +533,11 @@ fn model_catalog_provenance_for_manifest_status(
 
 /// Classify the startup catalog from the server that actually produced it.
 ///
-/// New servers report the exact catalog source in the existing bootstrap
-/// model/list response, including explicit false for ordinary catalogs. Older
-/// servers keep the historic local inference for ordinary providers so a
-/// protocol version mismatch does not add a new model/list RPC to regular
-/// resume/fork flows. When the local provider has
+/// New servers report whether the existing bootstrap model/list response needs
+/// manifest-scoped selection semantics, including explicit false for ordinary
+/// catalogs. Older servers keep the historic local inference for ordinary
+/// providers so a protocol version mismatch does not add a new model/list RPC
+/// to regular resume/fork flows. When the local provider has
 /// explicitly opted into a manifest, an older remote server is ambiguous;
 /// refresh that thread-scoped catalog before reuse.
 fn bootstrap_model_catalog_provenance(
@@ -558,7 +558,7 @@ fn bootstrap_model_catalog_provenance(
     }
 }
 
-/// Prefer the loaded thread's effective provider hint when a new app server
+/// Prefer the loaded thread's manifest-lineage hint when a new app server
 /// supplies it. Older servers omit the hint, so preserve the existing local
 /// provider-ID lookup instead of adding a new model-list RPC for ordinary
 /// remote sessions. An explicit false must win over local config because a
@@ -576,9 +576,9 @@ fn effective_thread_provider_uses_manifest(
 ///
 /// Ordinary providers historically share the startup catalog, so keep that
 /// no-extra-request behavior when both provider kinds are known and neither
-/// provider opted into manifests. A new app server reports the loaded
-/// thread's effective manifest status so same-ID provider overrides cannot
-/// accidentally reuse the startup catalog; older servers fall back above.
+/// provider has manifest lineage. A new app server reports the loaded thread's
+/// lineage so same-ID provider overrides cannot accidentally reuse the startup
+/// catalog; older servers fall back above.
 fn should_refresh_thread_model_catalog(
     current_catalog_provenance: ModelCatalogProvenance,
     target_provider_uses_manifest: Option<bool>,

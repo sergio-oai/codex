@@ -4188,6 +4188,29 @@ fn model_list_response_defaults_missing_manifest_hint() {
 }
 
 #[test]
+fn model_list_response_defaults_missing_advertised_reasoning_default() {
+    let response: ModelListResponse = serde_json::from_value(json!({
+        "data": [{
+            "id": "gpt-5",
+            "model": "gpt-5",
+            "upgrade": null,
+            "upgradeInfo": null,
+            "availabilityNux": null,
+            "displayName": "gpt-5",
+            "description": "",
+            "hidden": false,
+            "supportedReasoningEfforts": [],
+            "defaultReasoningEffort": "none",
+            "isDefault": true
+        }],
+        "nextCursor": null
+    }))
+    .expect("legacy model/list response");
+
+    assert_eq!(response.data[0].advertised_default_reasoning_effort, None);
+}
+
+#[test]
 fn thread_recency_sort_key_serializes_as_snake_case() {
     assert_eq!(
         serde_json::to_value(ThreadSortKey::RecencyAt).expect("sort key should serialize"),

@@ -5,8 +5,11 @@ import type { Thread } from "./Thread";
 
 export type ThreadStartedNotification = { thread: Thread,
 /**
- * Whether the effective provider uses an authoritative provider manifest.
- * Older app servers omit this hint; clients should then preserve their
- * existing provider-identification fallback.
+ * Whether the thread carries manifest-scoped provider lineage.
+ *
+ * This may remain true after switching back to an ordinary provider so
+ * clients keep thread-scoped catalog behavior. Older app servers omit this
+ * hint; clients should then preserve their existing provider-identification
+ * fallback.
  */
 modelProviderUsesManifest: boolean | null, };

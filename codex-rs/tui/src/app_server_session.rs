@@ -119,7 +119,6 @@ use codex_protocol::openai_models::ModelAvailabilityNux;
 use codex_protocol::openai_models::ModelPreset;
 use codex_protocol::openai_models::ModelServiceTier;
 use codex_protocol::openai_models::ModelUpgrade;
-use codex_protocol::openai_models::ReasoningEffort;
 use codex_protocol::openai_models::ReasoningEffortPreset;
 use codex_protocol::protocol::SubAgentSource;
 use codex_utils_absolute_path::AbsolutePathBuf;
@@ -1366,7 +1365,7 @@ pub(crate) fn status_account_display_from_auth_mode(
 }
 
 fn model_preset_from_api_model(model: ApiModel) -> ModelPreset {
-    let advertised_default_reasoning_effort = model.default_reasoning_effort;
+    let advertised_default_reasoning_effort = model.advertised_default_reasoning_effort;
     let upgrade = model.upgrade.map(|upgrade_id| {
         let upgrade_info = model.upgrade_info.clone();
         ModelUpgrade {
@@ -1387,9 +1386,7 @@ fn model_preset_from_api_model(model: ApiModel) -> ModelPreset {
         model: model.model,
         display_name: model.display_name,
         description: model.description,
-        default_reasoning_effort: advertised_default_reasoning_effort
-            .clone()
-            .unwrap_or(ReasoningEffort::None),
+        default_reasoning_effort: model.default_reasoning_effort,
         advertised_default_reasoning_effort,
         supported_reasoning_efforts: model
             .supported_reasoning_efforts

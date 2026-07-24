@@ -96,7 +96,16 @@ pub struct Model {
     pub description: String,
     pub hidden: bool,
     pub supported_reasoning_efforts: Vec<ReasoningEffortOption>,
-    pub default_reasoning_effort: Option<ReasoningEffort>,
+    /// Legacy effective default retained for existing clients.
+    pub default_reasoning_effort: ReasoningEffort,
+    /// Exact default advertised by the source model metadata.
+    ///
+    /// An authoritative manifest may intentionally omit a default even when
+    /// it advertises supported efforts. Clients using manifest catalog
+    /// semantics should prefer this field and omit an override when it is
+    /// null.
+    #[serde(default)]
+    pub advertised_default_reasoning_effort: Option<ReasoningEffort>,
     #[serde(default = "default_input_modalities")]
     pub input_modalities: Vec<InputModality>,
     #[serde(default)]
@@ -136,7 +145,9 @@ pub struct ReasoningEffortOption {
 #[ts(export_to = "v2/")]
 pub struct ModelListResponse {
     pub data: Vec<Model>,
-    /// Whether the catalog source uses an authoritative provider manifest.
+    /// Whether the catalog needs manifest-scoped selection semantics.
+    ///
+    /// This includes inherited manifest lineage after a provider switch.
     /// Older app servers omit this hint; clients should then preserve their
     /// existing compatibility fallback.
     // Current servers deliberately emit both true and false. An explicit false

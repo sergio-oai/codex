@@ -57,7 +57,8 @@ fn model_from_preset(preset: &ModelPreset) -> Model {
                 description: preset.description.clone(),
             })
             .collect(),
-        default_reasoning_effort: Some(preset.default_reasoning_effort.clone()),
+        default_reasoning_effort: preset.default_reasoning_effort.clone(),
+        advertised_default_reasoning_effort: preset.advertised_default_reasoning_effort.clone(),
         input_modalities: preset.input_modalities.clone(),
         // `write_models_cache()` round-trips through a simplified ModelInfo fixture that does not
         // preserve personality placeholders in base instructions, so app-server list results from
@@ -336,6 +337,14 @@ provider_manifest_path = "codex/provider-manifest"
         items[0].description,
         "Only advertised by the configured provider manifest"
     );
+    assert_eq!(items[0].default_reasoning_effort.as_str(), "medium");
+    assert_eq!(
+        items[0]
+            .advertised_default_reasoning_effort
+            .as_ref()
+            .map(|effort| effort.as_str()),
+        Some("medium")
+    );
     assert!(items[0].service_tiers.is_empty());
     assert!(items[0].additional_speed_tiers.is_empty());
     assert!(next_cursor.is_none());
@@ -433,7 +442,8 @@ provider_manifest_path = "codex/provider-manifest"
         .find(|model| model.model == "venado-no-reasoning")
         .expect("no-reasoning model should be listed");
     assert!(no_reasoning.supported_reasoning_efforts.is_empty());
-    assert_eq!(no_reasoning.default_reasoning_effort, None);
+    assert_eq!(no_reasoning.default_reasoning_effort.as_str(), "none");
+    assert_eq!(no_reasoning.advertised_default_reasoning_effort, None);
     let explicit_none = response
         .data
         .iter()
@@ -446,7 +456,8 @@ provider_manifest_path = "codex/provider-manifest"
             .as_str(),
         "none"
     );
-    assert_eq!(explicit_none.default_reasoning_effort, None);
+    assert_eq!(explicit_none.default_reasoning_effort.as_str(), "none");
+    assert_eq!(explicit_none.advertised_default_reasoning_effort, None);
 
     let started = mcp
         .start_thread(ThreadStartParams {

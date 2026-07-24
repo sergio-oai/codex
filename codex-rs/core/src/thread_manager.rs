@@ -766,30 +766,6 @@ impl ThreadManager {
         }
     }
 
-    /// Report whether the provider currently backing model/list configured an
-    /// authoritative manifest, excluding inherited manifest lineage.
-    ///
-    /// The lineage-aware hint above is intentionally broader because remote
-    /// clients need scoped-catalog behavior after provider switches. Callers
-    /// that serialize provider-owned model metadata need the exact current
-    /// provider instead.
-    pub async fn model_catalog_has_authoritative_provider_manifest(
-        &self,
-        thread_id: Option<ThreadId>,
-    ) -> CodexResult<bool> {
-        match thread_id {
-            Some(thread_id) => Ok(self
-                .get_thread(thread_id)
-                .await?
-                .config()
-                .await
-                .model_provider
-                .provider_manifest_path
-                .is_some()),
-            None => Ok(self.state.startup_provider_uses_manifest),
-        }
-    }
-
     pub fn list_collaboration_modes(&self) -> Vec<CollaborationModeMask> {
         self.state.models_manager.list_collaboration_modes()
     }

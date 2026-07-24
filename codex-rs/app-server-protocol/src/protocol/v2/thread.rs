@@ -171,9 +171,12 @@ pub struct ThreadStartResponse {
     pub thread: Thread,
     pub model: String,
     pub model_provider: String,
-    /// Whether the effective provider uses an authoritative provider manifest.
-    /// Older app servers omit this hint; clients should then preserve their
-    /// existing provider-identification fallback.
+    /// Whether the thread carries manifest-scoped provider lineage.
+    ///
+    /// This may remain true after switching back to an ordinary provider so
+    /// clients keep thread-scoped catalog behavior. Older app servers omit
+    /// this hint; clients should then preserve their existing
+    /// provider-identification fallback.
     // Current servers deliberately emit both true and false. An explicit false
     // keeps remote clients from misclassifying a same-ID local manifest provider.
     #[serde(default)]
@@ -411,9 +414,12 @@ pub struct ThreadResumeResponse {
     pub thread: Thread,
     pub model: String,
     pub model_provider: String,
-    /// Whether the effective provider uses an authoritative provider manifest.
-    /// Older app servers omit this hint; clients should then preserve their
-    /// existing provider-identification fallback.
+    /// Whether the thread carries manifest-scoped provider lineage.
+    ///
+    /// This may remain true after switching back to an ordinary provider so
+    /// clients keep thread-scoped catalog behavior. Older app servers omit
+    /// this hint; clients should then preserve their existing
+    /// provider-identification fallback.
     // Current servers deliberately emit both true and false. An explicit false
     // keeps remote clients from misclassifying a same-ID local manifest provider.
     #[serde(default)]
@@ -610,9 +616,12 @@ pub struct ThreadForkResponse {
     pub thread: Thread,
     pub model: String,
     pub model_provider: String,
-    /// Whether the effective provider uses an authoritative provider manifest.
-    /// Older app servers omit this hint; clients should then preserve their
-    /// existing provider-identification fallback.
+    /// Whether the thread carries manifest-scoped provider lineage.
+    ///
+    /// This may remain true after switching back to an ordinary provider so
+    /// clients keep thread-scoped catalog behavior. Older app servers omit
+    /// this hint; clients should then preserve their existing
+    /// provider-identification fallback.
     // Current servers deliberately emit both true and false. An explicit false
     // keeps remote clients from misclassifying a same-ID local manifest provider.
     #[serde(default)]
@@ -1554,9 +1563,12 @@ impl From<CoreTokenUsage> for TokenUsageBreakdown {
 #[ts(export_to = "v2/")]
 pub struct ThreadStartedNotification {
     pub thread: Thread,
-    /// Whether the effective provider uses an authoritative provider manifest.
-    /// Older app servers omit this hint; clients should then preserve their
-    /// existing provider-identification fallback.
+    /// Whether the thread carries manifest-scoped provider lineage.
+    ///
+    /// This may remain true after switching back to an ordinary provider so
+    /// clients keep thread-scoped catalog behavior. Older app servers omit
+    /// this hint; clients should then preserve their existing
+    /// provider-identification fallback.
     // Current servers deliberately emit both true and false. An explicit false
     // keeps remote clients from misclassifying a same-ID local manifest provider.
     #[serde(default)]

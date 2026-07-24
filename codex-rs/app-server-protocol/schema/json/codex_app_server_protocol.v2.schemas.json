@@ -9484,6 +9484,18 @@
           },
           "type": "array"
         },
+        "advertisedDefaultReasoningEffort": {
+          "anyOf": [
+            {
+              "$ref": "#/definitions/ReasoningEffort"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "Exact default advertised by the source model metadata.\n\nAn authoritative manifest may intentionally omit a default even when it advertises supported efforts. Clients using manifest catalog semantics should prefer this field and omit an override when it is null."
+        },
         "availabilityNux": {
           "anyOf": [
             {
@@ -9495,14 +9507,8 @@
           ]
         },
         "defaultReasoningEffort": {
-          "anyOf": [
-            {
-              "$ref": "#/definitions/ReasoningEffort"
-            },
-            {
-              "type": "null"
-            }
-          ]
+          "$ref": "#/definitions/ReasoningEffort",
+          "description": "Legacy effective default retained for existing clients."
         },
         "defaultServiceTier": {
           "default": null,
@@ -9645,7 +9651,7 @@
         },
         "modelProviderUsesManifest": {
           "default": null,
-          "description": "Whether the catalog source uses an authoritative provider manifest. Older app servers omit this hint; clients should then preserve their existing compatibility fallback.",
+          "description": "Whether the catalog needs manifest-scoped selection semantics.\n\nThis includes inherited manifest lineage after a provider switch. Older app servers omit this hint; clients should then preserve their existing compatibility fallback.",
           "type": [
             "boolean",
             "null"
@@ -16118,7 +16124,7 @@
         },
         "modelProviderUsesManifest": {
           "default": null,
-          "description": "Whether the effective provider uses an authoritative provider manifest. Older app servers omit this hint; clients should then preserve their existing provider-identification fallback.",
+          "description": "Whether the thread carries manifest-scoped provider lineage.\n\nThis may remain true after switching back to an ordinary provider so clients keep thread-scoped catalog behavior. Older app servers omit this hint; clients should then preserve their existing provider-identification fallback.",
           "type": [
             "boolean",
             "null"
@@ -17890,7 +17896,7 @@
         },
         "modelProviderUsesManifest": {
           "default": null,
-          "description": "Whether the effective provider uses an authoritative provider manifest. Older app servers omit this hint; clients should then preserve their existing provider-identification fallback.",
+          "description": "Whether the thread carries manifest-scoped provider lineage.\n\nThis may remain true after switching back to an ordinary provider so clients keep thread-scoped catalog behavior. Older app servers omit this hint; clients should then preserve their existing provider-identification fallback.",
           "type": [
             "boolean",
             "null"
@@ -18316,7 +18322,7 @@
         },
         "modelProviderUsesManifest": {
           "default": null,
-          "description": "Whether the effective provider uses an authoritative provider manifest. Older app servers omit this hint; clients should then preserve their existing provider-identification fallback.",
+          "description": "Whether the thread carries manifest-scoped provider lineage.\n\nThis may remain true after switching back to an ordinary provider so clients keep thread-scoped catalog behavior. Older app servers omit this hint; clients should then preserve their existing provider-identification fallback.",
           "type": [
             "boolean",
             "null"
@@ -18374,7 +18380,7 @@
       "properties": {
         "modelProviderUsesManifest": {
           "default": null,
-          "description": "Whether the effective provider uses an authoritative provider manifest. Older app servers omit this hint; clients should then preserve their existing provider-identification fallback.",
+          "description": "Whether the thread carries manifest-scoped provider lineage.\n\nThis may remain true after switching back to an ordinary provider so clients keep thread-scoped catalog behavior. Older app servers omit this hint; clients should then preserve their existing provider-identification fallback.",
           "type": [
             "boolean",
             "null"

@@ -3356,6 +3356,23 @@ async fn manifest_model_without_reasoning_efforts_selects_without_override() {
 }
 
 #[tokio::test]
+async fn manifest_lineage_uses_advertised_default_after_ordinary_switch() {
+    let (mut chat, _rx, _op_rx) = make_chatwidget_manual(Some("gpt-5.4")).await;
+    chat.model_catalog_provenance = ModelCatalogProvenance::KnownManifest;
+    let mut preset = get_available_model(&chat, "gpt-5.4");
+    // A lineage-aware catalog can be ordinary after an earlier manifest
+    // provider. Keep its exact source default distinct from the legacy
+    // placeholder to prove manifest selection reads the additive field.
+    preset.default_reasoning_effort = ReasoningEffortConfig::None;
+    preset.advertised_default_reasoning_effort = Some(ReasoningEffortConfig::Medium);
+
+    assert_eq!(
+        chat.default_reasoning_effort_for_model_selection(&preset),
+        Some(ReasoningEffortConfig::Medium)
+    );
+}
+
+#[tokio::test]
 async fn manifest_auto_model_without_reasoning_efforts_selects_without_override() {
     let (mut chat, mut rx, _op_rx) = make_chatwidget_manual(Some("gpt-5.4")).await;
     chat.model_catalog_provenance = ModelCatalogProvenance::KnownManifest;

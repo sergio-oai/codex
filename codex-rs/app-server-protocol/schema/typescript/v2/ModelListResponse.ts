@@ -5,9 +5,11 @@ import type { Model } from "./Model";
 
 export type ModelListResponse = { data: Array<Model>,
 /**
- * Whether the catalog source uses an authoritative provider manifest.
- * Older app servers omit this hint; clients should then preserve their
- * existing compatibility fallback.
+ * Whether the catalog needs manifest-scoped selection semantics.
+ *
+ * This includes inherited manifest lineage after a provider switch. Older
+ * app servers omit this hint; clients should then preserve their existing
+ * compatibility fallback.
  */
 modelProviderUsesManifest: boolean | null,
 /**
