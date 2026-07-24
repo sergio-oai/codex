@@ -13153,7 +13153,14 @@
             ]
           },
           "defaultReasoningEffort": {
-            "$ref": "#/definitions/v2/ReasoningEffort"
+            "anyOf": [
+              {
+                "$ref": "#/definitions/v2/ReasoningEffort"
+              },
+              {
+                "type": "null"
+              }
+            ]
           },
           "defaultServiceTier": {
             "default": null,

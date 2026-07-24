@@ -15,6 +15,7 @@ fn model_preset(id: &str, show_in_picker: bool) -> ModelPreset {
         display_name: format!("{id} display"),
         description: format!("{id} description"),
         default_reasoning_effort: ReasoningEffort::Medium,
+        advertised_default_reasoning_effort: Some(ReasoningEffort::Medium),
         supported_reasoning_efforts: vec![ReasoningEffortPreset {
             effort: ReasoningEffort::Medium,
             description: "Balanced".to_string(),

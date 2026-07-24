@@ -296,9 +296,8 @@ impl ChatWidget {
 
     /// `ModelPreset` uses `ReasoningEffort::None` as a legacy placeholder
     /// when a model has no default. Manifest catalogs are authoritative, so
-    /// only treat a default as an explicit override when that catalog
-    /// advertises it. Ordinary catalogs keep their historical synthetic
-    /// default path.
+    /// use the exact advertised default instead of that placeholder. Ordinary
+    /// catalogs keep their historical synthetic default path.
     fn default_reasoning_effort_for_model_selection(
         &self,
         preset: &ModelPreset,
@@ -306,11 +305,7 @@ impl ChatWidget {
         if !self.uses_manifest_catalog_selection_semantics() {
             return Some(preset.default_reasoning_effort.clone());
         }
-        preset
-            .supported_reasoning_efforts
-            .iter()
-            .any(|option| option.effort == preset.default_reasoning_effort)
-            .then(|| preset.default_reasoning_effort.clone())
+        preset.advertised_default_reasoning_effort.clone()
     }
 
     fn should_prompt_plan_mode_reasoning_scope(

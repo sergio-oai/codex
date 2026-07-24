@@ -270,10 +270,15 @@ impl CatalogRequestProcessor {
             .model_catalog_uses_provider_manifest(thread_id)
             .await
             .map_err(|err| invalid_request(format!("failed to inspect model catalog: {err}")))?;
+        let catalog_has_authoritative_provider_manifest = thread_manager
+            .model_catalog_has_authoritative_provider_manifest(thread_id)
+            .await
+            .map_err(|err| invalid_request(format!("failed to inspect model catalog: {err}")))?;
         let models = supported_models(
             Arc::clone(&thread_manager),
             thread_id,
             include_hidden.unwrap_or(false),
+            catalog_has_authoritative_provider_manifest,
             http_client_factory,
         )
         .await

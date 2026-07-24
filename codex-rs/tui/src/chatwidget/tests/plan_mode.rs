@@ -362,6 +362,7 @@ async fn manifest_model_switch_aligns_active_plan_effort_for_atomic_update() {
     manifest_preset.id = "manifest-low-only".to_string();
     manifest_preset.model = "manifest-low-only".to_string();
     manifest_preset.default_reasoning_effort = ReasoningEffortConfig::Low;
+    manifest_preset.advertised_default_reasoning_effort = Some(ReasoningEffortConfig::Low);
     manifest_preset.supported_reasoning_efforts = vec![ReasoningEffortPreset {
         effort: ReasoningEffortConfig::Low,
         description: "Low reasoning".to_string(),

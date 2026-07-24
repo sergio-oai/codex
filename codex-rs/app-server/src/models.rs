@@ -16,6 +16,7 @@ pub async fn supported_models(
     thread_manager: Arc<ThreadManager>,
     thread_id: Option<ThreadId>,
     include_hidden: bool,
+    catalog_has_authoritative_provider_manifest: bool,
     http_client_factory: HttpClientFactory,
 ) -> CodexResult<Vec<Model>> {
     let presets = match thread_id {
@@ -36,11 +37,24 @@ pub async fn supported_models(
     Ok(presets
         .into_iter()
         .filter(|preset| include_hidden || preset.show_in_picker)
-        .map(model_from_preset)
+        .map(|preset| model_from_preset(preset, catalog_has_authoritative_provider_manifest))
         .collect())
 }
 
-fn model_from_preset(preset: ModelPreset) -> Model {
+fn model_from_preset(
+    preset: ModelPreset,
+    catalog_has_authoritative_provider_manifest: bool,
+) -> Model {
+    // ModelPreset keeps ReasoningEffort::None as a legacy placeholder when
+    // ModelInfo has no default. Only authoritative manifests need to preserve
+    // that distinction on the app-server wire; ordinary catalogs retain their
+    // existing defaultReasoningEffort value.
+    let default_reasoning_effort = if catalog_has_authoritative_provider_manifest {
+        preset.advertised_default_reasoning_effort.clone()
+    } else {
+        Some(preset.default_reasoning_effort.clone())
+    };
+
     Model {
         id: preset.id.to_string(),
         model: preset.model.to_string(),
@@ -58,7 +72,7 @@ fn model_from_preset(preset: ModelPreset) -> Model {
         supported_reasoning_efforts: reasoning_efforts_from_preset(
             preset.supported_reasoning_efforts,
         ),
-        default_reasoning_effort: preset.default_reasoning_effort,
+        default_reasoning_effort,
         input_modalities: preset.input_modalities,
         supports_personality: preset.supports_personality,
         additional_speed_tiers: preset.additional_speed_tiers,

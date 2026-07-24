@@ -96,7 +96,7 @@ pub struct Model {
     pub description: String,
     pub hidden: bool,
     pub supported_reasoning_efforts: Vec<ReasoningEffortOption>,
-    pub default_reasoning_effort: ReasoningEffort,
+    pub default_reasoning_effort: Option<ReasoningEffort>,
     #[serde(default = "default_input_modalities")]
     pub input_modalities: Vec<InputModality>,
     #[serde(default)]

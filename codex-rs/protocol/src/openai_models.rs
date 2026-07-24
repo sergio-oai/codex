@@ -212,6 +212,12 @@ pub struct ModelPreset {
     pub description: String,
     /// Reasoning effort applied when none is explicitly chosen.
     pub default_reasoning_effort: ReasoningEffort,
+    /// Exact default advertised by the source model metadata before the
+    /// historical None placeholder is applied.
+    #[serde(default, skip_serializing, skip_deserializing)]
+    #[schemars(skip)]
+    #[ts(skip)]
+    pub advertised_default_reasoning_effort: Option<ReasoningEffort>,
     /// Supported reasoning effort options.
     pub supported_reasoning_efforts: Vec<ReasoningEffortPreset>,
     /// Whether this model supports personality-specific instructions.
@@ -611,14 +617,16 @@ pub struct ModelsResponse {
 impl From<ModelInfo> for ModelPreset {
     fn from(info: ModelInfo) -> Self {
         let supports_personality = info.supports_personality();
+        let advertised_default_reasoning_effort = info.default_reasoning_level.clone();
         ModelPreset {
             id: info.slug.clone(),
             model: info.slug.clone(),
             display_name: info.display_name,
             description: info.description.unwrap_or_default(),
-            default_reasoning_effort: info
-                .default_reasoning_level
+            default_reasoning_effort: advertised_default_reasoning_effort
+                .clone()
                 .unwrap_or(ReasoningEffort::None),
+            advertised_default_reasoning_effort,
             supported_reasoning_efforts: info.supported_reasoning_levels.clone(),
             supports_personality,
             additional_speed_tiers: info.additional_speed_tiers,
@@ -1243,6 +1251,21 @@ mod tests {
             preset.default_service_tier,
             Some(ServiceTier::Fast.request_value().to_string())
         );
+    }
+
+    #[test]
+    fn model_preset_preserves_missing_advertised_reasoning_default() {
+        let preset = ModelPreset::from(ModelInfo {
+            default_reasoning_level: None,
+            supported_reasoning_levels: vec![ReasoningEffortPreset {
+                effort: ReasoningEffort::None,
+                description: "No reasoning".to_string(),
+            }],
+            ..test_model(/*spec*/ None)
+        });
+
+        assert_eq!(preset.default_reasoning_effort, ReasoningEffort::None);
+        assert_eq!(preset.advertised_default_reasoning_effort, None);
     }
 
     #[test]

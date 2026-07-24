@@ -3121,6 +3121,7 @@ async fn model_picker_hides_show_in_picker_false_models_from_cache() {
         display_name: slug.to_string(),
         description: format!("{slug} description"),
         default_reasoning_effort: ReasoningEffortConfig::Medium,
+        advertised_default_reasoning_effort: Some(ReasoningEffortConfig::Medium),
         supported_reasoning_efforts: vec![ReasoningEffortPreset {
             effort: ReasoningEffortConfig::Medium,
             description: "medium".to_string(),
@@ -3317,6 +3318,7 @@ async fn manifest_model_without_reasoning_efforts_selects_without_override() {
     preset.id = "manifest-no-reasoning".to_string();
     preset.model = "manifest-no-reasoning".to_string();
     preset.default_reasoning_effort = ReasoningEffortConfig::None;
+    preset.advertised_default_reasoning_effort = None;
     preset.supported_reasoning_efforts.clear();
     while rx.try_recv().is_ok() {}
 
@@ -3363,6 +3365,7 @@ async fn manifest_auto_model_without_reasoning_efforts_selects_without_override(
     preset.display_name = "codex-auto-manifest".to_string();
     preset.show_in_picker = true;
     preset.default_reasoning_effort = ReasoningEffortConfig::None;
+    preset.advertised_default_reasoning_effort = None;
     preset.supported_reasoning_efforts.clear();
     while rx.try_recv().is_ok() {}
 
@@ -3574,6 +3577,7 @@ async fn reasoning_shortcut_does_not_invent_none_for_no_reasoning_model() {
     preset.id = "manifest-no-reasoning".to_string();
     preset.model = "manifest-no-reasoning".to_string();
     preset.default_reasoning_effort = ReasoningEffortConfig::None;
+    preset.advertised_default_reasoning_effort = None;
     preset.supported_reasoning_efforts.clear();
     chat.model_catalog = std::sync::Arc::new(ModelCatalog::new(vec![preset]));
     chat.set_model("manifest-no-reasoning");
@@ -3760,6 +3764,7 @@ async fn single_reasoning_option_skips_selection() {
         display_name: "model-with-single-reasoning".to_string(),
         description: "".to_string(),
         default_reasoning_effort: ReasoningEffortConfig::High,
+        advertised_default_reasoning_effort: Some(ReasoningEffortConfig::High),
         supported_reasoning_efforts: single_effort,
         supports_personality: false,
         additional_speed_tiers: Vec::new(),

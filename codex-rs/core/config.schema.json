@@ -1707,7 +1707,7 @@
           "type": "string"
         },
         "provider_manifest_path": {
-          "description": "Optional same-origin relative path to a versioned, provider-owned model manifest.\n\nWhen configured, Codex fetches this path relative to `base_url` and uses safe model metadata from it as this provider's authoritative catalog. Existing providers keep their current `/models` and bundled-catalog behavior when the field is unset.",
+          "description": "Optional same-origin relative path to a versioned, provider-owned model manifest.\n\nWhen configured, Codex fetches this path relative to an explicitly configured `base_url` and uses safe model metadata from it as this provider's authoritative catalog. Existing providers keep their current `/models` and bundled-catalog behavior when the field is unset.",
           "type": "string"
         },
         "query_params": {

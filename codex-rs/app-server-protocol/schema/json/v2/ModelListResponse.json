@@ -48,7 +48,14 @@
           ]
         },
         "defaultReasoningEffort": {
-          "$ref": "#/definitions/ReasoningEffort"
+          "anyOf": [
+            {
+              "$ref": "#/definitions/ReasoningEffort"
+            },
+            {
+              "type": "null"
+            }
+          ]
         },
         "defaultServiceTier": {
           "default": null,

@@ -57,7 +57,7 @@ fn model_from_preset(preset: &ModelPreset) -> Model {
                 description: preset.description.clone(),
             })
             .collect(),
-        default_reasoning_effort: preset.default_reasoning_effort.clone(),
+        default_reasoning_effort: Some(preset.default_reasoning_effort.clone()),
         input_modalities: preset.input_modalities.clone(),
         // `write_models_cache()` round-trips through a simplified ModelInfo fixture that does not
         // preserve personality placeholders in base instructions, so app-server list results from
@@ -356,6 +356,107 @@ provider_manifest_path = "codex/provider-manifest"
             .all(|request| request.url.path() != "/v1/models"),
         "an opted-in provider manifest should replace the ordinary /models request"
     );
+    server.verify().await;
+    Ok(())
+}
+
+#[tokio::test]
+async fn manifest_model_without_reasoning_has_no_advertised_default() -> Result<()> {
+    let server = MockServer::start().await;
+    Mock::given(method("GET"))
+        .and(path("/v1/codex/provider-manifest"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "schema_version": 1,
+            "models": [{
+                "id": "venado-no-reasoning",
+                "display_name": "Venado no reasoning",
+                "description": "Manifest model without reasoning support",
+                "context_window": 32_000,
+                "max_input_tokens": 24_000,
+                "default_reasoning_effort": null,
+                "supported_reasoning_efforts": [],
+                "service_tiers": []
+            }, {
+                "id": "venado-explicit-none",
+                "display_name": "Venado explicit none",
+                "description": "Manifest model with optional explicit none",
+                "context_window": 32_000,
+                "max_input_tokens": 24_000,
+                "default_reasoning_effort": null,
+                "supported_reasoning_efforts": ["none"],
+                "service_tiers": []
+            }]
+        })))
+        .expect(1)
+        .mount(&server)
+        .await;
+
+    let codex_home = TempDir::new()?;
+    std::fs::write(
+        codex_home.path().join("config.toml"),
+        format!(
+            r#"
+model_provider = "venado"
+
+[model_providers.venado]
+name = "Venado"
+base_url = "{}/v1"
+experimental_bearer_token = "venado-test-token"
+wire_api = "responses"
+provider_manifest_path = "codex/provider-manifest"
+"#,
+            server.uri()
+        ),
+    )?;
+
+    let mut mcp = TestAppServer::builder()
+        .with_codex_home(codex_home.path())
+        .without_auto_env()
+        .build_initialized()
+        .await?;
+    let response: ModelListResponse = mcp
+        .request(|request_id| ClientRequest::ModelList {
+            request_id,
+            params: ModelListParams {
+                thread_id: None,
+                limit: Some(100),
+                cursor: None,
+                include_hidden: None,
+            },
+        })
+        .await?;
+
+    assert_eq!(response.data.len(), 2);
+    let no_reasoning = response
+        .data
+        .iter()
+        .find(|model| model.model == "venado-no-reasoning")
+        .expect("no-reasoning model should be listed");
+    assert!(no_reasoning.supported_reasoning_efforts.is_empty());
+    assert_eq!(no_reasoning.default_reasoning_effort, None);
+    let explicit_none = response
+        .data
+        .iter()
+        .find(|model| model.model == "venado-explicit-none")
+        .expect("explicit-none model should be listed");
+    assert_eq!(explicit_none.supported_reasoning_efforts.len(), 1);
+    assert_eq!(
+        explicit_none.supported_reasoning_efforts[0]
+            .reasoning_effort
+            .as_str(),
+        "none"
+    );
+    assert_eq!(explicit_none.default_reasoning_effort, None);
+
+    let started = mcp
+        .start_thread(ThreadStartParams {
+            model: Some("venado-no-reasoning".to_string()),
+            ..Default::default()
+        })
+        .await?;
+
+    assert_eq!(started.model, "venado-no-reasoning");
+    assert_eq!(started.reasoning_effort, None);
     server.verify().await;
     Ok(())
 }
